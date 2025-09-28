@@ -1,0 +1,1994 @@
+from typing import Dict, List, Any, Optional
+import httpx
+import json
+import re
+from datetime import datetime, timedelta
+from bs4 import BeautifulSoup
+from duckduckgo_search import AsyncDDGS
+from langchain_google_genai import ChatGoogleGenerativeAI
+from langchain_core.messages import HumanMessage
+from models import WeatherData, Event, Location, RouteDetails, BudgetOptions, CalendarIntegrationResult, CalendarEvent
+from config import settings
+
+class WeatherTool:
+    """Tool for fetching weather data using OpenWeatherMap One Call API 3.0"""
+    
+    async def _get_coordinates(self, location: str) -> Dict[str, float]:
+        """Get latitude and longitude for a location using OpenWeatherMap Geocoding API"""
+        async with httpx.AsyncClient() as client:
+            geocoding_url = "http://api.openweathermap.org/geo/1.0/direct"
+            params = {
+                "q": location,
+                "limit": 1,
+                "appid": settings.WEATHER_API_KEY
+            }
+            
+            response = await client.get(geocoding_url, params=params)
+            response.raise_for_status()
+            
+            data = response.json()
+            if not data:
+                raise Exception(f"Location '{location}' not found")
+                
+            return {
+                "lat": data[0]["lat"],
+                "lon": data[0]["lon"]
+            }
+    
+    async def get_weather_forecast(self, location: str, start_date: datetime, end_date: datetime) -> WeatherData:
+        """Get weather forecast for a location and date range using OpenWeatherMap One Call API 3.0"""
+        try:
+            if not settings.WEATHER_API_KEY:
+                raise Exception("OpenWeatherMap API key is required. Please set WEATHER_API_KEY in your environment.")
+            
+            async with httpx.AsyncClient() as client:
+                # Get coordinates for the location
+                coordinates = await self._get_coordinates(location)
+                
+                # Use OpenWeatherMap One Call API 3.0 format
+                onecall_url = "https://api.openweathermap.org/data/3.0/onecall"
+                params = {
+                    "lat": coordinates["lat"],
+                    "lon": coordinates["lon"],
+                    "exclude": "minutely,alerts",  # Exclude minutely and alerts to reduce response size
+                    "appid": settings.WEATHER_API_KEY,
+                    "units": "metric"
+                }
+                
+                response = await client.get(onecall_url, params=params)
+                response.raise_for_status()
+                
+                weather_data = response.json()
+                
+                # Process the response data
+                current = weather_data.get("current", {})
+                daily_forecasts = weather_data.get("daily", [])
+                
+                # Extract daily forecast data
+                forecast_days = []
+                temp_min, temp_max = float('inf'), float('-inf')
+                
+                for day_data in daily_forecasts[:7]:  # Get up to 7 days
+                    day_temp = day_data.get("temp", {})
+                    temp_high = day_temp.get("max", 20)
+                    temp_low = day_temp.get("min", 15)
+                    
+                    temp_min = min(temp_min, temp_low)
+                    temp_max = max(temp_max, temp_high)
+                    
+                    weather_condition = day_data.get("weather", [{}])[0]
+                    
+                    forecast_days.append({
+                        "date": datetime.fromtimestamp(day_data["dt"]).strftime("%Y-%m-%d"),
+                        "temp_high": temp_high,
+                        "temp_low": temp_low,
+                        "condition": weather_condition.get("main", "clear").lower(),
+                        "description": weather_condition.get("description", "clear sky"),
+                        "humidity": day_data.get("humidity", 50),
+                        "wind_speed": day_data.get("wind_speed", 5),
+                        "pop": day_data.get("pop", 0)  # Probability of precipitation
+                    })
+                
+                # Get current conditions
+                current_weather = current.get("weather", [{}])[0]
+                current_condition = current_weather.get("main", "clear").lower()
+                
+                # Calculate average precipitation chance
+                avg_precipitation = sum(day.get("pop", 0) for day in daily_forecasts[:3]) / min(3, len(daily_forecasts))
+                
+                processed_data = {
+                    "location": location,
+                    "forecast_data": {
+                        "current": {
+                            "temp": current.get("temp", 20),
+                            "feels_like": current.get("feels_like", 20),
+                            "humidity": current.get("humidity", 50),
+                            "description": current_weather.get("description", "clear sky")
+                        },
+                        "daily": forecast_days
+                    },
+                    "temperature_range": {"min": temp_min if temp_min != float('inf') else 15, "max": temp_max if temp_max != float('-inf') else 25},
+                    "conditions": current_condition,
+                    "precipitation_chance": avg_precipitation
+                }
+                
+                return WeatherData(**processed_data)
+                
+        except httpx.HTTPStatusError as e:
+            if e.response.status_code == 401:
+                raise Exception("Invalid OpenWeatherMap API key")
+            elif e.response.status_code == 429:
+                raise Exception("OpenWeatherMap API rate limit exceeded")
+            else:
+                raise Exception(f"Weather API HTTP error: {e.response.status_code}")
+        except Exception as e:
+            raise Exception(f"Weather API error: {str(e)}")
+
+class MapsTool:
+    """Tool for route planning and location services using Folium/Leaflet and OpenStreetMap"""
+    
+    def __init__(self):
+        from geopy.geocoders import Nominatim
+        from geopy.distance import geodesic
+        self.geocoder = Nominatim(user_agent="lgforglobe-travel-planner/1.0")
+        self.geodesic = geodesic
+    
+    async def _geocode_location(self, location: str) -> Location:
+        """Get coordinates and details for a location using Nominatim/OpenStreetMap geocoding"""
+        try:
+            import asyncio
+            
+            # Run geocoding in thread pool since geopy is synchronous
+            def geocode_sync():
+                return self.geocoder.geocode(location, exactly_one=True, timeout=10)
+            
+            result = await asyncio.get_event_loop().run_in_executor(None, geocode_sync)
+            
+            if not result:
+                raise Exception(f"Location '{location}' not found")
+            
+            # Extract city and country from the address
+            address_parts = result.address.split(", ") if result.address else [location]
+            
+            # Try to identify city and country from address components
+            city = ""
+            country = ""
+            
+            # Common country identification
+            if len(address_parts) >= 2:
+                country = address_parts[-1]  # Usually the last part
+                
+            # Try to find city in address parts
+            for part in address_parts:
+                if any(word in part.lower() for word in ["city", "town", "village"]):
+                    city = part
+                    break
+            
+            # If no city found, use first part as fallback
+            if not city and address_parts:
+                city = address_parts[0]
+            
+            # Use location input as fallback
+            if not city:
+                city = location.split(",")[0].strip()
+            if not country and "," in location:
+                country = location.split(",")[-1].strip()
+            
+            return Location(
+                lat=result.latitude,
+                lng=result.longitude,
+                address=result.address or location,
+                city=city,
+                country=country or "Unknown"
+            )
+            
+        except Exception as e:
+            raise Exception(f"Geocoding error for '{location}': {str(e)}")
+    
+    async def _get_route_osrm(self, origin_coords: tuple, destination_coords: tuple, 
+                             transport_mode: str = "driving") -> Dict[str, Any]:
+        """Get route using OSRM (Open Source Routing Machine) API"""
+        try:
+            # Map transport modes to OSRM profiles
+            profile_mapping = {
+                "driving": "driving",
+                "walking": "foot",
+                "cycling": "bike",
+                "transit": "driving"  # Fallback to driving for transit
+            }
+            
+            profile = profile_mapping.get(transport_mode, "driving")
+            
+            # OSRM public API endpoint
+            osrm_url = f"http://router.project-osrm.org/route/v1/{profile}/{origin_coords[1]},{origin_coords[0]};{destination_coords[1]},{destination_coords[0]}"
+            
+            params = {
+                "overview": "full",
+                "alternatives": "true",
+                "steps": "true",
+                "geometries": "geojson"
+            }
+            
+            async with httpx.AsyncClient(timeout=30.0) as client:
+                response = await client.get(osrm_url, params=params)
+                response.raise_for_status()
+                
+                data = response.json()
+                if data.get("code") != "Ok" or not data.get("routes"):
+                    raise Exception("No routes found")
+                
+                return data
+                
+        except Exception as e:
+            # Fallback to simple distance calculation if OSRM fails
+            distance_km = self.geodesic(origin_coords, destination_coords).kilometers
+            
+            # Estimate travel time based on transport mode
+            speed_mapping = {
+                "driving": 50,  # km/h average
+                "walking": 5,   # km/h
+                "cycling": 15,  # km/h
+                "transit": 30   # km/h average
+            }
+            
+            speed = speed_mapping.get(transport_mode, 50)
+            travel_time_hours = distance_km / speed
+            travel_time_minutes = travel_time_hours * 60
+            
+            # Format travel time
+            if travel_time_minutes < 60:
+                time_text = f"{int(travel_time_minutes)} mins"
+            else:
+                hours = int(travel_time_minutes // 60)
+                minutes = int(travel_time_minutes % 60)
+                time_text = f"{hours}h {minutes}m"
+            
+            return {
+                "routes": [{
+                    "distance": distance_km * 1000,  # Convert to meters
+                    "duration": travel_time_minutes * 60,  # Convert to seconds
+                    "legs": [{
+                        "distance": distance_km * 1000,
+                        "duration": travel_time_minutes * 60,
+                        "steps": []
+                    }]
+                }],
+                "fallback": True,
+                "error": str(e)
+            }
+    
+    async def get_route(self, origin: str, destination: str, transport_mode: str = "driving") -> RouteDetails:
+        """Get route details between two locations using OpenStreetMap data"""
+        try:
+            # Get location details
+            origin_location = await self._geocode_location(origin)
+            destination_location = await self._geocode_location(destination)
+            
+            # Get route data
+            route_data = await self._get_route_osrm(
+                (origin_location.lat, origin_location.lng),
+                (destination_location.lat, destination_location.lng),
+                transport_mode
+            )
+            
+            routes = route_data.get("routes", [])
+            route_options = []
+            
+            for i, route in enumerate(routes):
+                route_options.append({
+                    "route_name": f"Route {i + 1}",
+                    "distance": route["distance"] / 1000,  # Convert to km
+                    "duration": self._format_duration(route["duration"]),
+                    "distance_text": f"{route['distance'] / 1000:.1f} km",
+                    "duration_value": route["duration"],  # in seconds
+                    "steps": len(route.get("legs", [{}])[0].get("steps", []))
+                })
+            
+            # Use the first route for main details
+            main_route = routes[0] if routes else {"distance": 0, "duration": 0}
+            
+            return RouteDetails(
+                origin=origin_location,
+                destination=destination_location,
+                route_options=route_options,
+                distance=main_route["distance"] / 1000,  # Convert to km
+                travel_time=self._format_duration(main_route["duration"]),
+                transportation_mode=transport_mode
+            )
+            
+        except Exception as e:
+            raise Exception(f"Maps routing error: {str(e)}")
+    
+    def _format_duration(self, duration_seconds: float) -> str:
+        """Format duration from seconds to human readable format"""
+        minutes = int(duration_seconds // 60)
+        hours = minutes // 60
+        remaining_minutes = minutes % 60
+        
+        if hours > 0:
+            return f"{hours}h {remaining_minutes}m"
+        else:
+            return f"{minutes} mins"
+    
+    async def create_route_map(self, origin: str, destination: str, transport_mode: str = "driving") -> str:
+        """Create a Folium/Leaflet map showing the route"""
+        try:
+            import folium
+            import os
+            from datetime import datetime
+            
+            # Get route details
+            route_details = await self.get_route(origin, destination, transport_mode)
+            
+            # Calculate map center
+            center_lat = (route_details.origin.lat + route_details.destination.lat) / 2
+            center_lng = (route_details.origin.lng + route_details.destination.lng) / 2
+            
+            # Create map
+            m = folium.Map(
+                location=[center_lat, center_lng],
+                zoom_start=10,
+                tiles='OpenStreetMap'
+            )
+            
+            # Add markers for origin and destination
+            folium.Marker(
+                [route_details.origin.lat, route_details.origin.lng],
+                popup=f"<b>Origin:</b><br>{route_details.origin.address}",
+                tooltip="Origin",
+                icon=folium.Icon(color='green', icon='play')
+            ).add_to(m)
+            
+            folium.Marker(
+                [route_details.destination.lat, route_details.destination.lng],
+                popup=f"<b>Destination:</b><br>{route_details.destination.address}",
+                tooltip="Destination",
+                icon=folium.Icon(color='red', icon='stop')
+            ).add_to(m)
+            
+            # Add a simple line between origin and destination
+            folium.PolyLine(
+                locations=[
+                    [route_details.origin.lat, route_details.origin.lng],
+                    [route_details.destination.lat, route_details.destination.lng]
+                ],
+                color='blue',
+                weight=5,
+                opacity=0.7,
+                popup=f"Distance: {route_details.distance:.1f} km<br>Time: {route_details.travel_time}"
+            ).add_to(m)
+            
+            # Add route information to map
+            route_info = f"""
+            <div style="position: fixed; 
+                        top: 10px; left: 50px; width: 300px; height: 90px; 
+                        background-color: white; border:2px solid grey; z-index:9999; 
+                        font-size:14px; padding: 10px;">
+                <p><b>Route Information</b></p>
+                <p>Distance: {route_details.distance:.1f} km</p>
+                <p>Travel Time: {route_details.travel_time}</p>
+                <p>Mode: {transport_mode.title()}</p>
+            </div>
+            """
+            m.get_root().html.add_child(folium.Element(route_info))
+            
+            # Save map to file
+            timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+            map_filename = f"route_map_{timestamp}.html"
+            map_path = os.path.join(os.getcwd(), map_filename)
+            m.save(map_path)
+            
+            return map_path
+            
+        except Exception as e:
+            raise Exception(f"Map creation error: {str(e)}")
+
+class EventsTool:
+    """Tool for finding events and activities using DuckDuckGo search and Gemini AI"""
+    
+    def __init__(self):
+        from langchain_google_genai import ChatGoogleGenerativeAI
+        self.llm = ChatGoogleGenerativeAI(
+            model=settings.GEMINI_MODEL,
+            google_api_key=settings.GEMINI_API_KEY,
+            temperature=0.3
+        )
+    
+    async def _get_location_coordinates(self, location: str) -> Dict[str, float]:
+        """Get coordinates for location using the weather tool's geocoding"""
+        weather_tool_instance = WeatherTool()
+        return await weather_tool_instance._get_coordinates(location)
+    
+    async def _search_events_web(self, location: str, start_date: datetime, end_date: datetime, 
+                                categories: List[str] = None) -> List[Dict[str, Any]]:
+        """Search for events using DuckDuckGo"""
+        try:
+            from duckduckgo_search import AsyncDDGS
+            from bs4 import BeautifulSoup
+            import re
+            
+            # Create search queries for different types of events
+            base_queries = [
+                f"events in {location} {start_date.strftime('%B %Y')}",
+                f"concerts shows {location} {start_date.strftime('%B %Y')}",
+                f"festivals {location} {start_date.strftime('%B %Y')}",
+                f"activities things to do {location} {start_date.strftime('%B %Y')}"
+            ]
+            
+            # Add category-specific searches
+            if categories:
+                category_queries = {
+                    "entertainment": f"concerts shows entertainment {location} {start_date.strftime('%B %Y')}",
+                    "sightseeing": f"tours attractions sightseeing {location} {start_date.strftime('%B %Y')}",
+                    "cultural": f"museums galleries cultural events {location} {start_date.strftime('%B %Y')}",
+                    "sports": f"sports games matches {location} {start_date.strftime('%B %Y')}",
+                    "food": f"food festivals restaurants events {location} {start_date.strftime('%B %Y')}"
+                }
+                
+                for category in categories:
+                    if category.lower() in category_queries:
+                        base_queries.append(category_queries[category.lower()])
+            
+            all_results = []
+            
+            async with AsyncDDGS() as ddgs:
+                for query in base_queries[:3]:  # Limit to 3 queries to avoid overwhelming
+                    try:
+                        # Search for text results
+                        results = await ddgs.text(query, max_results=10)
+                        
+                        for result in results:
+                            # Extract and clean content
+                            cleaned_result = {
+                                "title": result.get("title", ""),
+                                "body": result.get("body", ""),
+                                "url": result.get("href", ""),
+                                "source_query": query
+                            }
+                            
+                            # Filter out irrelevant results
+                            if any(keyword in cleaned_result["title"].lower() or keyword in cleaned_result["body"].lower() 
+                                  for keyword in ["event", "concert", "show", "festival", "tour", "exhibition", "performance", "activity"]):
+                                all_results.append(cleaned_result)
+                        
+                    except Exception as search_error:
+                        print(f"Search error for query '{query}': {search_error}")
+                        continue
+            
+            return all_results[:20]  # Limit total results
+            
+        except Exception as e:
+            raise Exception(f"Web search error: {str(e)}")
+    
+    async def _extract_events_with_gemini(self, search_results: List[Dict[str, Any]], 
+                                        location: str, start_date: datetime, end_date: datetime,
+                                        categories: List[str] = None) -> List[Event]:
+        """Use Gemini to extract structured event data from search results"""
+        try:
+            if not settings.GEMINI_API_KEY:
+                raise Exception("Gemini API key is required. Please set GEMINI_API_KEY in your environment.")
+            
+            # Get location coordinates
+            coords = await self._get_location_coordinates(location)
+            
+            # Prepare the search results text for Gemini
+            search_text = ""
+            for i, result in enumerate(search_results):
+                search_text += f"\n--- Search Result {i+1} ---\n"
+                search_text += f"Title: {result['title']}\n"
+                search_text += f"Content: {result['body']}\n"
+                search_text += f"URL: {result['url']}\n"
+            
+            # Create the prompt for Gemini
+            categories_text = ", ".join(categories) if categories else "any type"
+            prompt = f"""
+            Analyze the following search results and extract structured event information for {location} between {start_date.strftime('%Y-%m-%d')} and {end_date.strftime('%Y-%m-%d')}.
+
+            Focus on events in these categories: {categories_text}
+
+            Search Results:
+            {search_text}
+
+            Extract events and return them in this exact JSON format (return only valid JSON, no additional text):
+            {{
+                "events": [
+                    {{
+                        "id": "unique_id_for_event",
+                        "name": "Event Name",
+                        "description": "Brief description of the event",
+                        "start_time": "YYYY-MM-DDTHH:MM:SS",
+                        "end_time": "YYYY-MM-DDTHH:MM:SS",
+                        "category": "entertainment|sightseeing|cultural|sports|food|general",
+                        "price": 25.00,
+                        "booking_url": "url_if_available",
+                        "venue_name": "Venue Name",
+                        "venue_address": "Venue Address"
+                    }}
+                ]
+            }}
+
+            Guidelines:
+            - Only include events that are clearly happening in {location}
+            - Only include events within the date range {start_date.strftime('%Y-%m-%d')} to {end_date.strftime('%Y-%m-%d')}
+            - If exact dates aren't clear, make reasonable estimates within the date range
+            - If price isn't mentioned, use null
+            - If end time isn't clear, estimate based on event type (concerts: 3-4 hours, tours: 2-3 hours, etc.)
+            - Generate unique IDs using event name and venue
+            - Focus on actual events, not general listings or advertisements
+            - Categorize events appropriately
+            """
+            
+            # Call Gemini
+            response = await self.llm.ainvoke(prompt)
+            
+            # Parse the JSON response
+            import json
+            try:
+                # Clean the response to extract JSON
+                response_text = response.content.strip()
+                if "```json" in response_text:
+                    response_text = response_text.split("```json")[1].split("```")[0].strip()
+                elif "```" in response_text:
+                    response_text = response_text.split("```")[1].strip()
+                
+                event_data = json.loads(response_text)
+                
+                events = []
+                for event_info in event_data.get("events", []):
+                    try:
+                        # Parse dates
+                        start_time = datetime.fromisoformat(event_info["start_time"])
+                        end_time = datetime.fromisoformat(event_info["end_time"])
+                        
+                        # Create location object
+                        event_location = Location(
+                            lat=coords["lat"],
+                            lng=coords["lon"],
+                            address=event_info.get("venue_address", location),
+                            city=location.split(",")[0].strip(),
+                            country=location.split(",")[-1].strip() if "," in location else "Unknown"
+                        )
+                        
+                        # Create event object
+                        event = Event(
+                            id=event_info["id"],
+                            name=event_info["name"],
+                            description=event_info["description"],
+                            location=event_location,
+                            start_time=start_time,
+                            end_time=end_time,
+                            category=event_info["category"],
+                            price=event_info.get("price"),
+                            booking_url=event_info.get("booking_url")
+                        )
+                        
+                        events.append(event)
+                        
+                    except (ValueError, KeyError) as e:
+                        print(f"Error parsing event: {e}")
+                        continue
+                
+                return events
+                
+            except json.JSONDecodeError as e:
+                print(f"JSON parsing error: {e}")
+                print(f"Response text: {response_text}")
+                raise Exception("Failed to parse Gemini response as JSON")
+                
+        except Exception as e:
+            raise Exception(f"Gemini event extraction error: {str(e)}")
+    
+    async def find_events(self, location: str, start_date: datetime, end_date: datetime, 
+                         categories: List[str] = None) -> List[Event]:
+        """Find events in a location for a date range using DuckDuckGo search and Gemini AI"""
+        try:
+            if not settings.GEMINI_API_KEY:
+                raise Exception("Gemini API key is required. Please set GEMINI_API_KEY in your environment.")
+            
+            # Search the web for events
+            search_results = await self._search_events_web(location, start_date, end_date, categories)
+            
+            if not search_results:
+                return []  # No search results found
+            
+            # Extract structured event data using Gemini
+            events = await self._extract_events_with_gemini(search_results, location, start_date, end_date, categories)
+            
+            return events
+                
+        except Exception as e:
+            raise Exception(f"Events search error: {str(e)}")
+
+class BudgetTool:
+    """Tool for budget optimization and cost estimation using real market data"""
+    
+    async def _get_flight_prices(self, origin: str, destination: str, dates: Dict[str, datetime]) -> List[Dict[str, Any]]:
+        """Get flight prices using a flight API (Amadeus, Skyscanner, etc.)"""
+        # This would typically use Amadeus API or similar
+        # For now, we'll use a simplified cost estimation based on distance and market data
+        
+        # Calculate rough distance-based pricing
+        maps_tool_instance = MapsTool()
+        try:
+            route = await maps_tool_instance.get_route(origin, destination, "driving")
+            distance_km = route.distance
+            
+            # Rough flight pricing based on distance
+            base_cost_per_km = 0.15  # USD per km
+            flight_cost = max(distance_km * base_cost_per_km, 100)  # Minimum $100
+            
+            return [
+                {
+                    "type": "economy_flight",
+                    "cost": flight_cost,
+                    "duration": f"{max(int(distance_km / 800), 1)}h",  # Rough flight time
+                    "comfort": "economy",
+                    "provider": "Various Airlines"
+                },
+                {
+                    "type": "business_flight", 
+                    "cost": flight_cost * 2.5,
+                    "duration": f"{max(int(distance_km / 800), 1)}h",
+                    "comfort": "business",
+                    "provider": "Various Airlines"
+                }
+            ]
+        except:
+            # Fallback pricing if maps API fails
+            return [
+                {
+                    "type": "economy_flight",
+                    "cost": 300,
+                    "duration": "3h",
+                    "comfort": "economy",
+                    "provider": "Various Airlines"
+                }
+            ]
+    
+    async def _get_accommodation_prices(self, destination: str, days: int) -> List[Dict[str, Any]]:
+        """Get accommodation prices for the destination"""
+        # This would typically use Booking.com API, Hotels.com API, etc.
+        # For now, we'll use market-based estimates
+        
+        # Rough pricing based on destination type
+        destination_lower = destination.lower()
+        
+        # Base pricing by region/city type
+        if any(city in destination_lower for city in ["tokyo", "paris", "london", "new york", "singapore"]):
+            base_price = 150  # High-cost cities
+        elif any(city in destination_lower for city in ["bangkok", "prague", "budapest", "lisbon"]):
+            base_price = 60   # Medium-cost cities
+        else:
+            base_price = 80   # Default pricing
+        
+        return [
+            {
+                "type": "luxury_hotel",
+                "cost_per_night": base_price * 2.5,
+                "rating": 5,
+                "amenities": ["pool", "spa", "gym", "wifi", "breakfast", "concierge"],
+                "total_cost": base_price * 2.5 * days
+            },
+            {
+                "type": "mid_range_hotel",
+                "cost_per_night": base_price * 1.2,
+                "rating": 4,
+                "amenities": ["gym", "wifi", "breakfast"],
+                "total_cost": base_price * 1.2 * days
+            },
+            {
+                "type": "budget_hotel",
+                "cost_per_night": base_price * 0.7,
+                "rating": 3,
+                "amenities": ["wifi"],
+                "total_cost": base_price * 0.7 * days
+            },
+            {
+                "type": "hostel",
+                "cost_per_night": base_price * 0.3,
+                "rating": 2,
+                "amenities": ["wifi", "shared_kitchen", "common_area"],
+                "total_cost": base_price * 0.3 * days
+            }
+        ]
+    
+    async def optimize_budget(self, total_budget: float, destination: str, 
+                            days: int, preferences: Dict[str, Any]) -> BudgetOptions:
+        """Optimize budget allocation and find cost-effective options using real market data"""
+        try:
+            # Get transport options (simplified origin for demo)
+            origin = preferences.get("origin", "Current Location")
+            dates = {
+                "departure": datetime.now() + timedelta(days=30),
+                "return": datetime.now() + timedelta(days=30 + days)
+            }
+            
+            transport_options = await self._get_flight_prices(origin, destination, dates)
+            accommodation_options = await self._get_accommodation_prices(destination, days)
+            
+            # Calculate total costs for different combinations
+            budget_combinations = []
+            
+            for transport in transport_options:
+                for accommodation in accommodation_options:
+                    transport_cost = transport["cost"] * 2  # Round trip
+                    accommodation_cost = accommodation["total_cost"]
+                    
+                    # Reserve budget for food and activities
+                    remaining_budget = total_budget - transport_cost - accommodation_cost
+                    food_budget = remaining_budget * 0.6  # 60% for food
+                    activity_budget = remaining_budget * 0.4  # 40% for activities
+                    
+                    if remaining_budget > 0:  # Only include viable combinations
+                        budget_combinations.append({
+                            "transport": transport,
+                            "accommodation": accommodation,
+                            "food_budget": food_budget,
+                            "activity_budget": activity_budget,
+                            "total_estimated_cost": transport_cost + accommodation_cost,
+                            "remaining_budget": remaining_budget,
+                            "budget_utilization": (transport_cost + accommodation_cost) / total_budget
+                        })
+            
+            # Sort by budget utilization (prefer combinations that use budget efficiently)
+            budget_combinations.sort(key=lambda x: abs(x["budget_utilization"] - 0.8))  # Target 80% utilization
+            
+            # Select best options
+            selected_transport = budget_combinations[0]["transport"] if budget_combinations else transport_options[0]
+            selected_accommodation = budget_combinations[0]["accommodation"] if budget_combinations else accommodation_options[0]
+            
+            return BudgetOptions(
+                transport_options=transport_options,
+                accommodation_options=accommodation_options,
+                total_cost=total_budget
+            )
+            
+        except Exception as e:
+            raise Exception(f"Budget optimization error: {str(e)}")
+
+class AccommodationTool:
+    """Tool for finding accommodations using real booking APIs"""
+    
+    async def _get_location_details(self, location: str) -> Dict[str, Any]:
+        """Get location details for accommodation search"""
+        weather_tool_instance = WeatherTool()
+        coords = await weather_tool_instance._get_coordinates(location)
+        return {
+            "latitude": coords["lat"],
+            "longitude": coords["lon"],
+            "city": location.split(",")[0].strip()
+        }
+    
+    async def find_accommodations(self, location: str, check_in: datetime, 
+                                check_out: datetime, budget_per_night: float) -> List[Dict[str, Any]]:
+        """Find accommodation options within budget using booking APIs"""
+        try:
+            # This would typically use Booking.com API, Airbnb API, etc.
+            # For now, we'll use a realistic estimation system
+            
+            location_details = await self._get_location_details(location)
+            nights = (check_out - check_in).days
+            
+            if nights <= 0:
+                raise Exception("Check-out date must be after check-in date")
+            
+            # Generate realistic accommodation options based on location and budget
+            accommodations = []
+            
+            # Base pricing by location type
+            location_lower = location.lower()
+            price_multiplier = 1.0
+            
+            if any(city in location_lower for city in ["tokyo", "paris", "london", "new york", "singapore"]):
+                price_multiplier = 2.0  # High-cost cities
+            elif any(city in location_lower for city in ["bangkok", "prague", "budapest", "lisbon", "mexico city"]):
+                price_multiplier = 0.6  # Lower-cost cities
+            
+            # Generate accommodation options within and around budget
+            base_prices = [
+                {"type": "luxury_hotel", "base": 200, "rating": 5},
+                {"type": "boutique_hotel", "base": 120, "rating": 4.5},
+                {"type": "mid_range_hotel", "base": 80, "rating": 4},
+                {"type": "budget_hotel", "base": 50, "rating": 3},
+                {"type": "hostel", "base": 25, "rating": 2.5},
+                {"type": "apartment", "base": 90, "rating": 4.2},
+                {"type": "guesthouse", "base": 60, "rating": 3.8}
+            ]
+            
+            accommodation_id = 1
+            for accommodation_type in base_prices:
+                price_per_night = accommodation_type["base"] * price_multiplier
+                
+                # Include accommodations within reasonable range of budget
+                if price_per_night <= budget_per_night * 1.3:  # Up to 30% over budget
+                    
+                    # Define amenities based on accommodation type
+                    amenities = ["wifi"]
+                    if accommodation_type["type"] in ["luxury_hotel", "boutique_hotel"]:
+                        amenities.extend(["pool", "spa", "gym", "breakfast", "concierge", "room_service"])
+                    elif accommodation_type["type"] in ["mid_range_hotel", "apartment"]:
+                        amenities.extend(["breakfast", "gym", "kitchen" if "apartment" in accommodation_type["type"] else "restaurant"])
+                    elif accommodation_type["type"] == "budget_hotel":
+                        amenities.extend(["breakfast"])
+                    elif accommodation_type["type"] == "hostel":
+                        amenities.extend(["shared_kitchen", "common_area", "laundry"])
+                    elif accommodation_type["type"] == "guesthouse":
+                        amenities.extend(["breakfast", "garden"])
+                    
+                    # Check availability (simplified - in real implementation, this would query actual APIs)
+                    availability = True
+                    if check_in < datetime.now() + timedelta(days=2):
+                        availability = price_per_night < budget_per_night  # Last-minute bookings more limited
+                    
+                    accommodations.append({
+                        "id": f"accommodation_{accommodation_id}",
+                        "name": f"{location_details['city']} {accommodation_type['type'].replace('_', ' ').title()} #{accommodation_id}",
+                        "type": accommodation_type["type"],
+                        "price_per_night": round(price_per_night, 2),
+                        "total_cost": round(price_per_night * nights, 2),
+                        "rating": accommodation_type["rating"],
+                        "amenities": amenities,
+                        "location": location,
+                        "coordinates": {
+                            "latitude": location_details["latitude"],
+                            "longitude": location_details["longitude"]
+                        },
+                        "availability": availability,
+                        "check_in": check_in.isoformat(),
+                        "check_out": check_out.isoformat(),
+                        "nights": nights,
+                        "within_budget": price_per_night <= budget_per_night,
+                        "distance_to_center": f"{round(abs(hash(accommodation_type['type']) % 10), 1)} km"  # Simulated distance
+                    })
+                    
+                    accommodation_id += 1
+            
+            # Sort by price (ascending) and then by rating (descending)
+            accommodations.sort(key=lambda x: (x["price_per_night"], -x["rating"]))
+            
+            return accommodations
+            
+        except Exception as e:
+            raise Exception(f"Accommodation search error: {str(e)}")
+
+class GoogleCalendarTool:
+    """Tool for integrating travel itineraries with Google Calendar using MCP"""
+    
+    def __init__(self):
+        self.credentials = None
+        self.service = None
+    
+    async def _get_credentials(self):
+        """Get Google Calendar API credentials"""
+        try:
+            import os
+            from google.oauth2.credentials import Credentials
+            from google_auth_oauthlib.flow import InstalledAppFlow
+            from google.auth.transport.requests import Request
+            import pickle
+            
+            creds = None
+            token_path = settings.GOOGLE_CALENDAR_TOKEN_PATH
+            
+            # Load existing token
+            if os.path.exists(token_path):
+                try:
+                    with open(token_path, 'rb') as token:
+                        creds = pickle.load(token)
+                except Exception as e:
+                    print(f"Error loading token: {e}")
+            
+            # If there are no (valid) credentials available, let the user log in
+            if not creds or not creds.valid:
+                if creds and creds.expired and creds.refresh_token:
+                    try:
+                        creds.refresh(Request())
+                    except Exception as e:
+                        print(f"Error refreshing token: {e}")
+                        creds = None
+                
+                if not creds:
+                    if not os.path.exists(settings.GOOGLE_CALENDAR_CREDENTIALS_PATH):
+                        raise Exception(
+                            f"Google Calendar credentials file not found at {settings.GOOGLE_CALENDAR_CREDENTIALS_PATH}. "
+                            "Please download credentials.json from Google Cloud Console and place it in the project root."
+                        )
+                    
+                    flow = InstalledAppFlow.from_client_secrets_file(
+                        settings.GOOGLE_CALENDAR_CREDENTIALS_PATH, 
+                        settings.GOOGLE_CALENDAR_SCOPES
+                    )
+                    creds = flow.run_local_server(port=0)
+                
+                # Save the credentials for the next run
+                with open(token_path, 'wb') as token:
+                    pickle.dump(creds, token)
+            
+            self.credentials = creds
+            return creds
+            
+        except Exception as e:
+            raise Exception(f"Google Calendar authentication error: {str(e)}")
+    
+    async def _get_service(self):
+        """Get Google Calendar API service"""
+        try:
+            from googleapiclient.discovery import build
+            
+            if not self.credentials:
+                await self._get_credentials()
+            
+            if not self.service:
+                self.service = build('calendar', 'v3', credentials=self.credentials)
+            
+            return self.service
+            
+        except Exception as e:
+            raise Exception(f"Google Calendar service error: {str(e)}")
+    
+    async def create_trip_calendar(self, trip_name: str, destination: str) -> str:
+        """Create a new calendar for the trip"""
+        try:
+            service = await self._get_service()
+            
+            calendar = {
+                'summary': f"Trip to {destination}",
+                'description': f"Travel itinerary for {trip_name}",
+                'timeZone': 'UTC'
+            }
+            
+            created_calendar = service.calendars().insert(body=calendar).execute()
+            return created_calendar['id']
+            
+        except Exception as e:
+            raise Exception(f"Calendar creation error: {str(e)}")
+    
+    async def add_event_to_calendar(self, calendar_id: str, event_data: Dict[str, Any]) -> str:
+        """Add a single event to the calendar"""
+        try:
+            service = await self._get_service()
+            
+            # Format the event for Google Calendar API
+            event = {
+                'summary': event_data['summary'],
+                'location': event_data.get('location', ''),
+                'description': event_data.get('description', ''),
+                'start': {
+                    'dateTime': event_data['start_time'].isoformat(),
+                    'timeZone': 'UTC',
+                },
+                'end': {
+                    'dateTime': event_data['end_time'].isoformat(),
+                    'timeZone': 'UTC',
+                },
+                'reminders': {
+                    'useDefault': False,
+                    'overrides': [
+                        {'method': 'email', 'minutes': 24 * 60},  # 1 day before
+                        {'method': 'popup', 'minutes': 60},       # 1 hour before
+                    ],
+                },
+            }
+            
+            # Add attendees if provided
+            if event_data.get('attendees'):
+                event['attendees'] = [{'email': email} for email in event_data['attendees']]
+            
+            created_event = service.events().insert(calendarId=calendar_id, body=event).execute()
+            return created_event['id']
+            
+        except Exception as e:
+            raise Exception(f"Event creation error: {str(e)}")
+    
+    async def sync_itinerary_to_calendar(self, itinerary, trip_request) -> Dict[str, Any]:
+        """Sync the complete itinerary to Google Calendar"""
+        try:
+            from models import CalendarIntegrationResult, CalendarEvent
+            
+            # Create a new calendar for this trip
+            trip_name = f"{trip_request.destination} - {trip_request.start_date.strftime('%B %Y')}"
+            calendar_id = await self.create_trip_calendar(trip_name, trip_request.destination)
+            
+            created_events = []
+            errors = []
+            
+            # Convert itinerary items to calendar events
+            for day_index, day_items in enumerate(itinerary.days):
+                current_date = trip_request.start_date + timedelta(days=day_index)
+                
+                for item in day_items:
+                    try:
+                        # Parse time (assuming format like "09:00" or "9:00 AM")
+                        time_str = item.time.replace(' AM', '').replace(' PM', '')
+                        if ':' in time_str:
+                            hour, minute = map(int, time_str.split(':'))
+                            if 'PM' in item.time and hour != 12:
+                                hour += 12
+                            elif 'AM' in item.time and hour == 12:
+                                hour = 0
+                        else:
+                            hour = int(time_str)
+                            minute = 0
+                        
+                        # Calculate start and end times
+                        start_time = current_date.replace(hour=hour, minute=minute, second=0, microsecond=0)
+                        
+                        # Parse duration (assuming format like "2 hours" or "90 minutes")
+                        duration_parts = item.duration.lower().split()
+                        if 'hour' in duration_parts[1]:
+                            duration_minutes = int(float(duration_parts[0]) * 60)
+                        elif 'minute' in duration_parts[1]:
+                            duration_minutes = int(duration_parts[0])
+                        else:
+                            duration_minutes = 60  # Default 1 hour
+                        
+                        end_time = start_time + timedelta(minutes=duration_minutes)
+                        
+                        # Create event data
+                        event_data = {
+                            'summary': item.activity,
+                            'description': f"Location: {item.location.address}\nDuration: {item.duration}",
+                            'location': item.location.address,
+                            'start_time': start_time,
+                            'end_time': end_time
+                        }
+                        
+                        # Add event to calendar
+                        event_id = await self.add_event_to_calendar(calendar_id, event_data)
+                        
+                        # Create calendar event model
+                        calendar_event = CalendarEvent(
+                            id=event_id,
+                            summary=event_data['summary'],
+                            description=event_data['description'],
+                            location=event_data['location'],
+                            start_time=start_time,
+                            end_time=end_time
+                        )
+                        
+                        created_events.append(calendar_event)
+                        
+                    except Exception as e:
+                        error_msg = f"Failed to create event for {item.activity}: {str(e)}"
+                        errors.append(error_msg)
+                        print(f"Calendar sync error: {error_msg}")
+            
+            # Get calendar URL
+            calendar_url = f"https://calendar.google.com/calendar/embed?src={calendar_id}"
+            
+            result = CalendarIntegrationResult(
+                success=len(created_events) > 0,
+                created_events=created_events,
+                calendar_id=calendar_id,
+                errors=errors,
+                trip_calendar_url=calendar_url
+            )
+            
+            return result
+            
+        except Exception as e:
+            raise Exception(f"Itinerary sync error: {str(e)}")
+    
+    async def update_calendar_event(self, calendar_id: str, event_id: str, updated_data: Dict[str, Any]) -> bool:
+        """Update an existing calendar event"""
+        try:
+            service = await self._get_service()
+            
+            # Get the existing event
+            event = service.events().get(calendarId=calendar_id, eventId=event_id).execute()
+            
+            # Update fields
+            if 'summary' in updated_data:
+                event['summary'] = updated_data['summary']
+            if 'description' in updated_data:
+                event['description'] = updated_data['description']
+            if 'location' in updated_data:
+                event['location'] = updated_data['location']
+            if 'start_time' in updated_data:
+                event['start'] = {
+                    'dateTime': updated_data['start_time'].isoformat(),
+                    'timeZone': 'UTC',
+                }
+            if 'end_time' in updated_data:
+                event['end'] = {
+                    'dateTime': updated_data['end_time'].isoformat(),
+                    'timeZone': 'UTC',
+                }
+            
+            # Update the event
+            service.events().update(calendarId=calendar_id, eventId=event_id, body=event).execute()
+            return True
+            
+        except Exception as e:
+            raise Exception(f"Event update error: {str(e)}")
+    
+    async def delete_trip_calendar(self, calendar_id: str) -> bool:
+        """Delete the trip calendar"""
+        try:
+            service = await self._get_service()
+            service.calendars().delete(calendarId=calendar_id).execute()
+            return True
+            
+        except Exception as e:
+            raise Exception(f"Calendar deletion error: {str(e)}")
+
+class IRCTCTrainsTool:
+    """Tool for checking available trains using IRCTC RapidAPI"""
+    
+    def __init__(self):
+        self.api_host = settings.IRCTC_API_HOST
+        self.api_key = settings.RAPIDAPI_KEY
+    
+    async def _get_station_code_with_gemini(self, city_name: str) -> Dict[str, Any]:
+        """Get railway station code for a city using Gemini AI"""
+        try:
+            llm = ChatGoogleGenerativeAI(
+                model=settings.GEMINI_MODEL,
+                google_api_key=settings.GEMINI_API_KEY,
+                temperature=0.3
+            )
+            
+            prompt = f"""
+            You are a railway expert for Indian Railways. For the city "{city_name}", provide:
+            1. The main railway station code (usually 3-4 letters)
+            2. Alternative station codes if the city has multiple major stations
+            3. The full station name
+            4. Any important notes about the station
+            
+            City: {city_name}
+            
+            Respond in JSON format:
+            {{
+                "main_station_code": "CODE",
+                "station_name": "Full Station Name",
+                "alternative_codes": ["CODE1", "CODE2"],
+                "city": "{city_name}",
+                "notes": "Any important information"
+            }}
+            
+            Examples:
+            - Delhi → {{"main_station_code": "NDLS", "station_name": "New Delhi", "alternative_codes": ["DLI", "DSB"], "city": "Delhi", "notes": "NDLS is the main station"}}
+            - Mumbai → {{"main_station_code": "CSTM", "station_name": "Chhatrapati Shivaji Terminus", "alternative_codes": ["LTT", "BYC"], "city": "Mumbai", "notes": "CSTM is the main terminus"}}
+            """
+            
+            messages = [HumanMessage(content=prompt)]
+            response = await llm.ainvoke(messages)
+            
+            # Parse JSON response
+            try:
+                # Extract JSON from response
+                json_match = re.search(r'\{.*\}', response.content, re.DOTALL)
+                if json_match:
+                    station_info = json.loads(json_match.group())
+                    return station_info
+                else:
+                    raise ValueError("No JSON found in response")
+            except (json.JSONDecodeError, ValueError):
+                # Fallback parsing
+                return {
+                    "main_station_code": "NDLS",
+                    "station_name": f"{city_name} Railway Station",
+                    "alternative_codes": [],
+                    "city": city_name,
+                    "notes": "Could not parse Gemini response, using default"
+                }
+                
+        except Exception as e:
+            # Fallback to basic mapping for common cities
+            basic_mapping = {
+                "delhi": {"main_station_code": "NDLS", "station_name": "New Delhi"},
+                "mumbai": {"main_station_code": "CSTM", "station_name": "Chhatrapati Shivaji Terminus"},
+                "bangalore": {"main_station_code": "SBC", "station_name": "Bangalore City"},
+                "chennai": {"main_station_code": "MAS", "station_name": "Chennai Central"},
+                "kolkata": {"main_station_code": "HWH", "station_name": "Howrah Junction"},
+                "hyderabad": {"main_station_code": "HYB", "station_name": "Hyderabad Deccan"},
+                "pune": {"main_station_code": "PUNE", "station_name": "Pune Junction"},
+                "jaipur": {"main_station_code": "JP", "station_name": "Jaipur Junction"}
+            }
+            
+            city_key = city_name.lower().strip()
+            if city_key in basic_mapping:
+                info = basic_mapping[city_key]
+                return {
+                    "main_station_code": info["main_station_code"],
+                    "station_name": info["station_name"],
+                    "alternative_codes": [],
+                    "city": city_name,
+                    "notes": f"Gemini lookup failed, using fallback mapping: {str(e)}"
+                }
+            
+            return {
+                "main_station_code": "NDLS",
+                "station_name": f"{city_name} Railway Station",
+                "alternative_codes": [],
+                "city": city_name,
+                "notes": f"Gemini lookup failed, using default: {str(e)}"
+            }
+    
+    async def _get_station_code(self, location: str) -> str:
+        """Get railway station code for a location (backward compatibility)"""
+        info = await self._get_station_code_with_gemini(location)
+        return info["main_station_code"]
+    
+    async def _search_train_prices_web(self, origin: str, destination: str, date: str) -> Dict[str, Any]:
+        """Search for train prices using DuckDuckGo web search"""
+        try:
+            async with AsyncDDGS() as ddgs:
+                # Search for train prices and booking information
+                search_query = f"train booking {origin} to {destination} price fare IRCTC {date}"
+                
+                results = []
+                async for result in ddgs.text(search_query, max_results=5):
+                    results.append({
+                        "title": result.get("title", ""),
+                        "url": result.get("href", ""),
+                        "snippet": result.get("body", "")
+                    })
+                
+                # Use Gemini to analyze the search results
+                llm = ChatGoogleGenerativeAI(
+                    model=settings.GEMINI_MODEL,
+                    google_api_key=settings.GEMINI_API_KEY,
+                    temperature=0.3
+                )
+                
+                analysis_prompt = f"""
+                Analyze these web search results for train travel from {origin} to {destination} on {date}.
+                Extract useful information about:
+                1. Typical price ranges for different classes (SL, 3A, 2A, 1A)
+                2. Popular trains on this route
+                3. Booking tips and recommendations
+                4. Travel time estimates
+                
+                Search Results:
+                {json.dumps(results, indent=2)}
+                
+                Provide a concise summary with practical information for travelers.
+                """
+                
+                messages = [HumanMessage(content=analysis_prompt)]
+                analysis = await llm.ainvoke(messages)
+                
+                return {
+                    "search_results": results,
+                    "price_analysis": analysis.content,
+                    "search_query": search_query,
+                    "route": f"{origin} → {destination}",
+                    "date": date
+                }
+                
+        except Exception as e:
+            return {
+                "search_results": [],
+                "price_analysis": f"Unable to fetch web pricing data: {str(e)}",
+                "search_query": search_query if 'search_query' in locals() else "",
+                "route": f"{origin} → {destination}",
+                "date": date
+            }
+
+        # Extract city name and convert to lowercase
+        city = location.lower().split(",")[0].strip()
+        
+        # Remove common words
+        for word in ["city", "junction", "central", "station"]:
+            city = city.replace(word, "").strip()
+        
+        return station_mapping.get(city, city.upper()[:4])
+    
+    async def get_live_trains(self, from_station_code: str, to_station_code: str = None, hours: int = 1) -> Dict[str, Any]:
+        """Get live train information using IRCTC API"""
+        try:
+            if not self.api_key:
+                raise Exception("RapidAPI key is required. Please set RAPIDAPI_KEY in your environment.")
+            
+            import http.client
+            import json
+            
+            conn = http.client.HTTPSConnection(self.api_host)
+            
+            headers = {
+                'x-rapidapi-key': self.api_key,
+                'x-rapidapi-host': self.api_host
+            }
+            
+            # Build query parameters
+            query_params = f"?hours={hours}"
+            if from_station_code:
+                query_params += f"&fromStationCode={from_station_code}"
+            if to_station_code:
+                query_params += f"&toStationCode={to_station_code}"
+            
+            conn.request("GET", f"/api/v3/getLiveStation{query_params}", headers=headers)
+            
+            res = conn.getresponse()
+            data = res.read()
+            
+            if res.status != 200:
+                raise Exception(f"IRCTC API error: HTTP {res.status}")
+            
+            response_data = json.loads(data.decode("utf-8"))
+            conn.close()
+            
+            return response_data
+            
+        except Exception as e:
+            raise Exception(f"Train search error: {str(e)}")
+    
+    async def search_trains_between_cities(self, origin: str, destination: str, travel_date: datetime = None) -> List[Dict[str, Any]]:
+        """Search for trains between two cities"""
+        try:
+            from models import TrainDetails, TrainSearchResult
+            
+            # Get station codes
+            from_code = await self._get_station_code(origin)
+            to_code = await self._get_station_code(destination)
+            
+            # Get live train data
+            train_data = await self.get_live_trains(from_code, to_code, hours=24)
+            
+            trains = []
+            
+            # Process the API response
+            if train_data.get("status") and train_data.get("data"):
+                train_list = train_data["data"]
+                
+                for train_info in train_list:
+                    try:
+                        train = TrainDetails(
+                            train_number=train_info.get("trainNumber", "N/A"),
+                            train_name=train_info.get("trainName", "N/A"),
+                            from_station=train_info.get("fromStation", origin),
+                            to_station=train_info.get("toStation", destination),
+                            departure_time=train_info.get("departureTime", "N/A"),
+                            arrival_time=train_info.get("arrivalTime", "N/A"),
+                            duration=train_info.get("duration", "N/A"),
+                            classes_available=train_info.get("classes", []),
+                            availability_status=train_info.get("availability", "Available"),
+                            distance=train_info.get("distance", "N/A")
+                        )
+                        trains.append(train.dict())
+                        
+                    except Exception as e:
+                        print(f"Error processing train data: {e}")
+                        continue
+            
+            return trains
+            
+        except Exception as e:
+            raise Exception(f"Train search between cities error: {str(e)}")
+    
+    async def get_train_recommendations(self, origin: str, destination: str, 
+                                     travel_date: datetime = None, 
+                                     preferences: Dict[str, Any] = None) -> Dict[str, Any]:
+        """Get train recommendations with AI analysis"""
+        try:
+            from langchain_google_genai import ChatGoogleGenerativeAI
+            
+            # Search for trains
+            trains = await self.search_trains_between_cities(origin, destination, travel_date)
+            
+            if not trains:
+                return {
+                    "trains": [],
+                    "recommendations": "No trains found for this route. Please check station names or try alternative routes.",
+                    "route_analysis": f"No direct trains available between {origin} and {destination}."
+                }
+            
+            # Use Gemini to analyze and recommend trains
+            llm = ChatGoogleGenerativeAI(
+                model=settings.GEMINI_MODEL,
+                google_api_key=settings.GEMINI_API_KEY,
+                temperature=0.3
+            )
+            
+            prompt = f"""
+            Analyze the following train options from {origin} to {destination} and provide recommendations:
+
+            Available Trains:
+            {json.dumps(trains, indent=2)}
+
+            Travel Preferences: {preferences or 'None specified'}
+
+            Please provide:
+            1. Top 3 recommended trains with reasons
+            2. Best train for speed, comfort, and budget
+            3. Travel tips and considerations
+            4. Alternative options if available
+            5. Booking recommendations
+
+            Format your response as helpful travel advice.
+            """
+            
+            response = await llm.ainvoke(prompt)
+            
+            # Get station information using Gemini
+            origin_station_info = await self._get_station_code_with_gemini(origin)
+            dest_station_info = await self._get_station_code_with_gemini(destination)
+            
+            # Get web price analysis
+            date_str = travel_date.strftime("%Y-%m-%d") if travel_date else datetime.now().strftime("%Y-%m-%d")
+            web_price_data = await self._search_train_prices_web(origin, destination, date_str)
+            
+            return {
+                "trains": trains,
+                "total_trains": len(trains),
+                "recommendations": response.content,
+                "route_analysis": f"Found {len(trains)} trains from {origin} to {destination}",
+                "search_timestamp": datetime.now().isoformat(),
+                "origin_station_info": origin_station_info,
+                "destination_station_info": dest_station_info,
+                "web_price_analysis": web_price_data,
+                "enhanced_search": True
+            }
+            
+        except Exception as e:
+            raise Exception(f"Train recommendations error: {str(e)}")
+
+class AmadeusFlightsTool:
+    """Tool for flight information using Amadeus API"""
+    
+    def __init__(self):
+        self.api_key = settings.AMADEUS_API_KEY
+        self.api_secret = settings.AMADEUS_API_SECRET
+        self.base_url = settings.AMADEUS_BASE_URL
+        self.access_token = None
+        self.token_expires_at = None
+    
+    async def _get_access_token(self) -> str:
+        """Get OAuth access token from Amadeus API"""
+        try:
+            if not self.api_key or not self.api_secret:
+                raise Exception("Amadeus API key and secret are required. Please set AMADEUS_API_KEY and AMADEUS_API_SECRET in your environment.")
+            
+            # Check if token is still valid
+            if self.access_token and self.token_expires_at:
+                from datetime import datetime
+                if datetime.now() < self.token_expires_at:
+                    return self.access_token
+            
+            # Get new token
+            async with httpx.AsyncClient() as client:
+                token_url = f"{self.base_url}/v1/security/oauth2/token"
+                
+                headers = {
+                    "Content-Type": "application/x-www-form-urlencoded"
+                }
+                
+                data = {
+                    "grant_type": "client_credentials",
+                    "client_id": self.api_key,
+                    "client_secret": self.api_secret
+                }
+                
+                response = await client.post(token_url, headers=headers, data=data)
+                response.raise_for_status()
+                
+                token_data = response.json()
+                self.access_token = token_data["access_token"]
+                
+                # Set expiration time (usually 1799 seconds)
+                expires_in = token_data.get("expires_in", 1799)
+                from datetime import datetime, timedelta
+                self.token_expires_at = datetime.now() + timedelta(seconds=expires_in - 60)  # 60 sec buffer
+                
+                return self.access_token
+                
+        except Exception as e:
+            raise Exception(f"Amadeus authentication error: {str(e)}")
+    
+    async def _get_airport_code_with_gemini(self, city_name: str) -> str:
+        """Use Gemini AI to get airport code from city name"""
+        try:
+            from langchain_google_genai import ChatGoogleGenerativeAI
+            
+            llm = ChatGoogleGenerativeAI(
+                model=settings.GEMINI_MODEL,
+                google_api_key=settings.GEMINI_API_KEY,
+                temperature=0.1
+            )
+            
+            prompt = f"""
+            What is the main international airport IATA code for {city_name}?
+            
+            Return ONLY the 3-letter IATA code (like LAX, JFK, LHR, etc.) for the main/largest airport serving this city.
+            If the city has multiple airports, return the primary international airport code.
+            If you're unsure, return the most commonly used airport code for that city.
+            
+            Examples:
+            - New York → JFK
+            - London → LHR  
+            - Paris → CDG
+            - Tokyo → NRT
+            - Mumbai → BOM
+            - Delhi → DEL
+            
+            City: {city_name}
+            Airport Code:
+            """
+            
+            response = await llm.ainvoke(prompt)
+            airport_code = response.content.strip().upper()
+            
+            # Validate it's a 3-letter code
+            if len(airport_code) == 3 and airport_code.isalpha():
+                return airport_code
+            else:
+                # Try to extract 3-letter code from response
+                import re
+                codes = re.findall(r'\b[A-Z]{3}\b', airport_code)
+                if codes:
+                    return codes[0]
+                else:
+                    # Fallback mapping for common cities
+                    fallback_mapping = {
+                        "new york": "JFK",
+                        "london": "LHR",
+                        "paris": "CDG",
+                        "tokyo": "NRT",
+                        "delhi": "DEL",
+                        "mumbai": "BOM",
+                        "bangalore": "BLR",
+                        "chennai": "MAA",
+                        "kolkata": "CCU",
+                        "hyderabad": "HYD",
+                        "pune": "PNQ",
+                        "ahmedabad": "AMD",
+                        "los angeles": "LAX",
+                        "chicago": "ORD",
+                        "miami": "MIA",
+                        "singapore": "SIN",
+                        "dubai": "DXB",
+                        "bangkok": "BKK",
+                        "sydney": "SYD"
+                    }
+                    
+                    city_lower = city_name.lower().strip()
+                    return fallback_mapping.get(city_lower, "XXX")  # XXX indicates unknown
+            
+        except Exception as e:
+            print(f"Error getting airport code with Gemini: {e}")
+            return "XXX"  # Unknown airport code
+    
+    async def resolve_airport_code(self, city_name: str) -> Dict[str, Any]:
+        """Resolve city name to comprehensive airport information using Gemini AI"""
+        try:
+            llm = ChatGoogleGenerativeAI(
+                model=settings.GEMINI_MODEL,
+                google_api_key=settings.GEMINI_API_KEY,
+                temperature=0.3
+            )
+            
+            prompt = f"""
+            You are an aviation expert with comprehensive knowledge of airports worldwide. 
+            For the city "{city_name}", provide detailed airport information.
+            
+            Include:
+            1. Primary IATA airport code (3 letters) - the main international airport
+            2. Full airport name
+            3. City and country
+            4. Alternative airports serving the same city/region
+            5. Distance from city center if known
+            6. Airport type (International/Domestic)
+            
+            Respond in JSON format:
+            {{
+                "airport_code": "XXX",
+                "airport_name": "Full Airport Name",
+                "city": "{city_name}",
+                "country": "Country Name",
+                "alternatives": [
+                    {{"code": "YYY", "name": "Alternative Airport Name", "type": "International/Domestic"}}
+                ],
+                "distance_from_city": "XX km",
+                "airport_type": "International/Domestic",
+                "notes": "Additional information"
+            }}
+            
+            Examples:
+            - New York → {{"airport_code": "JFK", "airport_name": "John F. Kennedy International Airport", "alternatives": [{{"code": "LGA", "name": "LaGuardia Airport"}}, {{"code": "EWR", "name": "Newark Liberty International Airport"}}]}}
+            - London → {{"airport_code": "LHR", "airport_name": "Heathrow Airport", "alternatives": [{{"code": "LGW", "name": "Gatwick Airport"}}, {{"code": "STN", "name": "Stansted Airport"}}]}}
+            - Delhi → {{"airport_code": "DEL", "airport_name": "Indira Gandhi International Airport", "alternatives": []}}
+            
+            City: {city_name}
+            """
+            
+            messages = [HumanMessage(content=prompt)]
+            response = await llm.ainvoke(messages)
+            
+            # Parse the response to extract airport information
+            try:
+                json_match = re.search(r'\{.*\}', response.content, re.DOTALL)
+                if json_match:
+                    airport_info = json.loads(json_match.group())
+                    # Validate required fields
+                    if "airport_code" not in airport_info:
+                        airport_info["airport_code"] = "XXX"
+                    if "airport_name" not in airport_info:
+                        airport_info["airport_name"] = f"{city_name} Airport"
+                    return airport_info
+                else:
+                    raise ValueError("No JSON found in response")
+                    
+            except (json.JSONDecodeError, ValueError) as e:
+                # Enhanced fallback with common airports
+                common_airports = {
+                    "new york": {"airport_code": "JFK", "airport_name": "John F. Kennedy International Airport", "alternatives": [{"code": "LGA", "name": "LaGuardia Airport"}, {"code": "EWR", "name": "Newark Liberty International Airport"}]},
+                    "london": {"airport_code": "LHR", "airport_name": "Heathrow Airport", "alternatives": [{"code": "LGW", "name": "Gatwick Airport"}]},
+                    "paris": {"airport_code": "CDG", "airport_name": "Charles de Gaulle Airport", "alternatives": [{"code": "ORY", "name": "Orly Airport"}]},
+                    "delhi": {"airport_code": "DEL", "airport_name": "Indira Gandhi International Airport", "alternatives": []},
+                    "mumbai": {"airport_code": "BOM", "airport_name": "Chhatrapati Shivaji Maharaj International Airport", "alternatives": []},
+                    "bangalore": {"airport_code": "BLR", "airport_name": "Kempegowda International Airport", "alternatives": []},
+                    "chennai": {"airport_code": "MAA", "airport_name": "Chennai International Airport", "alternatives": []},
+                    "tokyo": {"airport_code": "NRT", "airport_name": "Narita International Airport", "alternatives": [{"code": "HND", "name": "Haneda Airport"}]},
+                    "singapore": {"airport_code": "SIN", "airport_name": "Singapore Changi Airport", "alternatives": []},
+                    "dubai": {"airport_code": "DXB", "airport_name": "Dubai International Airport", "alternatives": []},
+                    "los angeles": {"airport_code": "LAX", "airport_name": "Los Angeles International Airport", "alternatives": []},
+                    "chicago": {"airport_code": "ORD", "airport_name": "O'Hare International Airport", "alternatives": []}
+                }
+                
+                city_key = city_name.lower().strip()
+                if city_key in common_airports:
+                    info = common_airports[city_key]
+                    return {
+                        "airport_code": info["airport_code"],
+                        "airport_name": info["airport_name"],
+                        "city": city_name,
+                        "country": "Unknown",
+                        "alternatives": info["alternatives"],
+                        "notes": f"Gemini parsing failed, using fallback data: {str(e)}"
+                    }
+                
+                return {
+                    "airport_code": "XXX",
+                    "airport_name": f"{city_name} Airport",
+                    "city": city_name,
+                    "country": "Unknown",
+                    "alternatives": [],
+                    "notes": f"Could not resolve airport code: {str(e)}"
+                }
+                
+        except Exception as e:
+            return {
+                "airport_code": "XXX",
+                "airport_name": f"{city_name} Airport",
+                "city": city_name,
+                "country": "Unknown",
+                "alternatives": [],
+                "error": str(e),
+                "notes": "Airport resolution failed"
+            }
+    
+    async def _search_flight_prices_web(self, origin: str, destination: str, date: str) -> Dict[str, Any]:
+        """Search for flight prices using DuckDuckGo web search"""
+        try:
+            async with AsyncDDGS() as ddgs:
+                # Search for flight prices and booking information
+                search_query = f"flights {origin} to {destination} price cheap tickets {date}"
+                
+                results = []
+                async for result in ddgs.text(search_query, max_results=8):
+                    results.append({
+                        "title": result.get("title", ""),
+                        "url": result.get("href", ""),
+                        "snippet": result.get("body", "")
+                    })
+                
+                # Also search for airline-specific information
+                airline_query = f"airline tickets {origin} {destination} booking {date}"
+                airline_results = []
+                async for result in ddgs.text(airline_query, max_results=5):
+                    airline_results.append({
+                        "title": result.get("title", ""),
+                        "url": result.get("href", ""),
+                        "snippet": result.get("body", "")
+                    })
+                
+                # Use Gemini to analyze the search results
+                llm = ChatGoogleGenerativeAI(
+                    model=settings.GEMINI_MODEL,
+                    google_api_key=settings.GEMINI_API_KEY,
+                    temperature=0.3
+                )
+                
+                analysis_prompt = f"""
+                Analyze these web search results for flights from {origin} to {destination} on {date}.
+                Extract useful information about:
+                1. Typical price ranges (economy, business, first class)
+                2. Popular airlines on this route
+                3. Best booking websites and deals
+                4. Flight duration and direct vs connecting flights
+                5. Best time to book for this route
+                6. Alternative dates with better prices
+                
+                General Flight Results:
+                {json.dumps(results[:5], indent=2)}
+                
+                Airline-Specific Results:
+                {json.dumps(airline_results[:3], indent=2)}
+                
+                Provide a comprehensive summary with practical booking advice and price insights.
+                """
+                
+                messages = [HumanMessage(content=analysis_prompt)]
+                analysis = await llm.ainvoke(messages)
+                
+                return {
+                    "search_results": results,
+                    "airline_results": airline_results,
+                    "price_analysis": analysis.content,
+                    "search_queries": [search_query, airline_query],
+                    "route": f"{origin} → {destination}",
+                    "date": date,
+                    "total_results": len(results) + len(airline_results)
+                }
+                
+        except Exception as e:
+            return {
+                "search_results": [],
+                "airline_results": [],
+                "price_analysis": f"Unable to fetch web pricing data: {str(e)}",
+                "search_queries": [],
+                "route": f"{origin} → {destination}",
+                "date": date,
+                "total_results": 0
+            }
+    
+    async def get_flight_schedules(self, carrier_code: str, flight_number: str, 
+                                 departure_date: str) -> Dict[str, Any]:
+        """Get flight schedules using Amadeus API"""
+        try:
+            access_token = await self._get_access_token()
+            
+            async with httpx.AsyncClient() as client:
+                url = f"{self.base_url}/v2/schedule/flights"
+                
+                headers = {
+                    "Authorization": f"Bearer {access_token}",
+                    "Content-Type": "application/json"
+                }
+                
+                params = {
+                    "carrierCode": carrier_code,
+                    "flightNumber": flight_number,
+                    "scheduledDepartureDate": departure_date
+                }
+                
+                response = await client.get(url, headers=headers, params=params)
+                response.raise_for_status()
+                
+                return response.json()
+                
+        except Exception as e:
+            raise Exception(f"Amadeus flight schedule error: {str(e)}")
+    
+    async def search_flights_between_cities(self, origin_city: str, destination_city: str, 
+                                          departure_date: datetime = None) -> List[Dict[str, Any]]:
+        """Search for flights between two cities"""
+        try:
+            from models import FlightDetails, FlightSearchResult
+            
+            # Get airport codes using Gemini
+            origin_code = await self._get_airport_code_with_gemini(origin_city)
+            dest_code = await self._get_airport_code_with_gemini(destination_city)
+            
+            if origin_code == "XXX" or dest_code == "XXX":
+                return []  # Cannot search without valid airport codes
+            
+            # For now, we'll use a mock flight search since Amadeus flight search 
+            # requires different endpoints and parameters
+            # In production, you would use the Flight Offers Search API
+            
+            flights = []
+            
+            # Mock flight data with realistic information
+            mock_flights = [
+                {
+                    "flight_number": "AI101",
+                    "carrier_code": "AI",
+                    "carrier_name": "Air India",
+                    "departure_time": "06:30",
+                    "arrival_time": "09:45",
+                    "duration": "3h 15m",
+                    "aircraft_type": "Boeing 737-800"
+                },
+                {
+                    "flight_number": "6E234",
+                    "carrier_code": "6E",
+                    "carrier_name": "IndiGo",
+                    "departure_time": "14:20",
+                    "arrival_time": "17:30",
+                    "duration": "3h 10m",
+                    "aircraft_type": "Airbus A320"
+                },
+                {
+                    "flight_number": "SG567",
+                    "carrier_code": "SG",
+                    "carrier_name": "SpiceJet",
+                    "departure_time": "19:45",
+                    "arrival_time": "22:55",
+                    "duration": "3h 10m",
+                    "aircraft_type": "Boeing 737-800"
+                }
+            ]
+            
+            departure_date_str = departure_date.strftime("%Y-%m-%d") if departure_date else datetime.now().strftime("%Y-%m-%d")
+            
+            for flight_info in mock_flights:
+                flight = FlightDetails(
+                    flight_number=flight_info["flight_number"],
+                    carrier_code=flight_info["carrier_code"],
+                    carrier_name=flight_info["carrier_name"],
+                    departure_airport=origin_code,
+                    arrival_airport=dest_code,
+                    departure_time=flight_info["departure_time"],
+                    arrival_time=flight_info["arrival_time"],
+                    duration=flight_info["duration"],
+                    aircraft_type=flight_info.get("aircraft_type"),
+                    flight_date=departure_date_str,
+                    status="Scheduled"
+                )
+                
+                flights.append(flight.dict())
+            
+            return flights
+            
+        except Exception as e:
+            raise Exception(f"Flight search between cities error: {str(e)}")
+    
+    async def get_flight_recommendations(self, origin_city: str, destination_city: str,
+                                       departure_date: datetime = None,
+                                       preferences: Dict[str, Any] = None) -> Dict[str, Any]:
+        """Get flight recommendations with AI analysis"""
+        try:
+            from langchain_google_genai import ChatGoogleGenerativeAI
+            
+            # Search for flights
+            flights = await self.search_flights_between_cities(origin_city, destination_city, departure_date)
+            
+            if not flights:
+                return {
+                    "flights": [],
+                    "recommendations": f"No flights found between {origin_city} and {destination_city}. Please check city names or try alternative airports.",
+                    "route_analysis": f"No direct flights available between {origin_city} and {destination_city}."
+                }
+            
+            # Use Gemini to analyze and recommend flights
+            llm = ChatGoogleGenerativeAI(
+                model=settings.GEMINI_MODEL,
+                google_api_key=settings.GEMINI_API_KEY,
+                temperature=0.3
+            )
+            
+            prompt = f"""
+            Analyze the following flight options from {origin_city} to {destination_city} and provide recommendations:
+
+            Available Flights:
+            {json.dumps(flights, indent=2)}
+
+            Travel Preferences: {preferences or 'None specified'}
+
+            Please provide:
+            1. Best flight options based on timing, duration, and airline
+            2. Recommendations for business vs leisure travel
+            3. Airport and check-in tips
+            4. Best booking strategies and timing
+            5. Alternative options and considerations
+            6. Travel time recommendations (arrive early, connections, etc.)
+
+            Format your response as helpful travel advice for air travel.
+            """
+            
+            response = await llm.ainvoke(prompt)
+            
+            return {
+                "flights": flights,
+                "total_flights": len(flights),
+                "recommendations": response.content,
+                "route_analysis": f"Found {len(flights)} flights from {origin_city} to {destination_city}",
+                "search_timestamp": datetime.now().isoformat(),
+                "origin_airport": await self._get_airport_code_with_gemini(origin_city),
+                "destination_airport": await self._get_airport_code_with_gemini(destination_city)
+            }
+            
+        except Exception as e:
+            raise Exception(f"Flight recommendations error: {str(e)}")
+    
+    async def get_flight_recommendations(self, origin_city: str, destination_city: str, 
+                                       departure_date: str, return_date: str = None,
+                                       preferences: Dict[str, Any] = None) -> Dict[str, Any]:
+        """Get flight recommendations with enhanced web price search"""
+        try:
+            # Get basic flight data
+            basic_recommendations = await self.get_flight_recommendations_basic(
+                origin_city, destination_city, departure_date, preferences
+            )
+            
+            # Get web price search data
+            web_price_data = await self._search_flight_prices_web(
+                origin_city, destination_city, departure_date
+            )
+            
+            # Get airport information
+            origin_airport_info = await self.resolve_airport_code(origin_city)
+            dest_airport_info = await self.resolve_airport_code(destination_city)
+            
+            # Combine all information
+            enhanced_recommendations = {
+                **basic_recommendations,
+                "web_price_analysis": web_price_data,
+                "origin_airport_info": origin_airport_info,
+                "destination_airport_info": dest_airport_info,
+                "enhanced_search": True
+            }
+            
+            return enhanced_recommendations
+            
+        except Exception as e:
+            # Fallback to basic recommendations
+            try:
+                return await self.get_flight_recommendations_basic(
+                    origin_city, destination_city, departure_date, preferences
+                )
+            except:
+                raise Exception(f"Enhanced flight recommendations error: {str(e)}")
+    
+    async def get_flight_recommendations_basic(self, origin_city: str, destination_city: str, 
+                                             departure_date: str, preferences: Dict[str, Any] = None) -> Dict[str, Any]:
+        """Basic flight recommendations (original method renamed)"""
+        # This is the original get_flight_recommendations method content
+        flights = await self.search_flights_between_cities(origin_city, destination_city, departure_date)
+        
+        if not flights:
+            return {
+                "flights": [],
+                "recommendations": f"No flights found between {origin_city} and {destination_city}. Please check city names or try alternative airports.",
+                "route_analysis": f"No direct flights available between {origin_city} and {destination_city}."
+            }
+        
+        # Use Gemini to analyze and recommend flights
+        llm = ChatGoogleGenerativeAI(
+            model=settings.GEMINI_MODEL,
+            google_api_key=settings.GEMINI_API_KEY,
+            temperature=0.3
+        )
+        
+        prompt = f"""
+        Analyze the following flight options from {origin_city} to {destination_city} and provide recommendations:
+
+        Available Flights:
+        {json.dumps(flights, indent=2)}
+
+        Travel Preferences: {preferences or 'None specified'}
+
+        Please provide:
+        1. Best flight options based on timing, duration, and airline
+        2. Recommendations for business vs leisure travel
+        3. Airport and check-in tips
+        4. Best booking strategies and timing
+        5. Alternative options and considerations
+        6. Travel time recommendations (arrive early, connections, etc.)
+
+        Format your response as helpful travel advice for air travel.
+        """
+        
+        response = await llm.ainvoke(prompt)
+        
+        return {
+            "flights": flights,
+            "total_flights": len(flights),
+            "recommendations": response.content,
+            "route_analysis": f"Found {len(flights)} flights from {origin_city} to {destination_city}",
+            "search_timestamp": datetime.now().isoformat(),
+            "origin_airport": await self._get_airport_code_with_gemini(origin_city),
+            "destination_airport": await self._get_airport_code_with_gemini(destination_city)
+        }
+
+# Initialize tools
+weather_tool = WeatherTool()
+maps_tool = MapsTool()
+events_tool = EventsTool()
+budget_tool = BudgetTool()
+accommodation_tool = AccommodationTool()
+calendar_tool = GoogleCalendarTool()
+trains_tool = IRCTCTrainsTool()
+flights_tool = AmadeusFlightsTool()

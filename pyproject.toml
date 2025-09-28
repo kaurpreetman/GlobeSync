@@ -1,0 +1,51 @@
+[build-system]
+requires = ["setuptools>=61.0", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "lgforglobe"
+version = "0.1.0"
+description = "LangGraph Travel Planning Backend with FastAPI using Gemini"
+readme = "README.md"
+requires-python = ">=3.12"
+dependencies = [
+    "fastapi>=0.104.0",
+    "uvicorn[standard]>=0.24.0",
+    "langchain>=0.1.0",
+    "langgraph>=0.2.0",
+    "langchain-google-genai>=1.0.0",
+    "langchain-community>=0.1.0",
+    "google-generativeai>=0.3.0",
+    "pydantic>=2.5.0",
+    "httpx>=0.25.0",
+    "python-dotenv>=1.0.0",
+    "python-multipart>=0.0.6",
+    "typing-extensions>=4.8.0",
+    "aiofiles>=23.2.1",
+    "requests>=2.31.0",
+    "duckduckgo-search>=3.8.0",
+    "beautifulsoup4>=4.12.0",
+    "lxml>=4.9.0",
+    "folium>=0.14.0",
+    "geopy>=2.3.0",
+    "google-auth>=2.15.0",
+    "google-auth-oauthlib>=1.0.0",
+    "google-auth-httplib2>=0.1.0",
+    "google-api-python-client>=2.70.0"
+]
+
+[tool.setuptools]
+py-modules = ["main", "api", "agents", "config", "models", "orchestrator", "tools", "examples", "tests"]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=7.4.0",
+    "pytest-asyncio>=0.21.0",
+    "pytest-cov>=4.1.0",
+    "black>=23.0.0",
+    "flake8>=6.0.0",
+    "mypy>=1.5.0"
+]
+
+[project.scripts]
+lgforglobe = "main:main"
