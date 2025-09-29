@@ -5,7 +5,7 @@ from config import settings
 def main():
     """Main entry point for the LangGraph Travel Planning API"""
     print("🚀 Starting LangGraph Travel Planning API...")
-    print(f"📍 Server will run on {settings.HOST}:{settings.PORT}")
+    print(f"📍Server will run on {settings.HOST}:{settings.PORT}")
     print(f"🔧 Debug mode: {settings.DEBUG}")
     print("📚 API Documentation available at: http://localhost:8000/docs")
     print("🎯 Available agents: Weather, Maps, Events, Budget, Itinerary")

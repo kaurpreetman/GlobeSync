@@ -77,19 +77,12 @@ async def test_events_search():
         
         # Test DuckDuckGo search availability
         try:
-            from duckduckgo_search import AsyncDDGS
+            from duckduckgo_search import DDGS
             print("   ✅ DuckDuckGo search module available")
         except ImportError:
             print("   ❌ duckduckgo-search package not installed")
             return False
         
-        # Test BeautifulSoup availability
-        try:
-            from bs4 import BeautifulSoup
-            print("   ✅ BeautifulSoup available for content parsing")
-        except ImportError:
-            print("   ❌ beautifulsoup4 package not installed")
-            return False
         
         # Test actual event search
         result = await events_tool.find_events(

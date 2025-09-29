@@ -5,7 +5,7 @@ from decimal import Decimal
 
 from models import TripRequest, UserPreferences
 from agents import weather_agent, maps_agent, events_agent, budget_agent, itinerary_agent
-from orchestrator import travel_orchestrator
+from orchestrator import TravelOrchestrator
 from tools import weather_tool, maps_tool, events_tool, budget_tool
 
 @pytest.fixture
@@ -173,7 +173,7 @@ class TestOrchestrator:
     @pytest.mark.asyncio
     async def test_trip_planning_workflow(self, sample_trip_request):
         """Test complete trip planning workflow"""
-        result = await travel_orchestrator.plan_trip(sample_trip_request)
+        result = await TravelOrchestrator.plan_trip(sample_trip_request)
         
         assert isinstance(result, dict)
         assert "final_summary" in result or "error" in result
@@ -186,7 +186,7 @@ class TestOrchestrator:
     @pytest.mark.asyncio
     async def test_trip_status(self):
         """Test trip status retrieval"""
-        status = await travel_orchestrator.get_trip_status("test_trip_123")
+        status = await TravelOrchestrator.get_trip_status("test_trip_123")
         
         assert isinstance(status, dict)
         assert "trip_id" in status

@@ -8,7 +8,7 @@ from datetime import datetime
 import asyncio
 
 from models import TripRequest, TripSummary, UserPreferences
-from orchestrator import travel_orchestrator
+from orchestrator import orchestrator
 from config import settings
 
 # Initialize FastAPI app
@@ -77,8 +77,6 @@ async def get_system_config():
     api_keys_status = {
         "gemini_api_key": "configured" if settings.GEMINI_API_KEY else "missing",
         "weather_api_key": "configured" if settings.WEATHER_API_KEY else "missing",
-        "maps_api_key": "configured" if settings.MAPS_API_KEY else "missing",
-        "events_api_key": "configured" if settings.EVENTS_API_KEY else "missing"
     }
     
     all_configured = all(status == "configured" for status in api_keys_status.values())
@@ -90,13 +88,9 @@ async def get_system_config():
         "configuration_instructions": {
             "gemini_api_key": "Get from Google AI Studio: https://makersuite.google.com/app/apikey",
             "weather_api_key": "Get from OpenWeatherMap: https://openweathermap.org/api",
-            "maps_api_key": "Get from Google Cloud Console: Enable Maps JavaScript API and Directions API",
-            "events_api_key": "Get from Eventbrite: https://www.eventbrite.com/platform/api"
         },
         "required_apis": {
             "weather": "OpenWeatherMap One Call API 3.0",
-            "maps": "Google Maps Directions & Geocoding API",
-            "events": "Eventbrite API v3",
             "ai": "Google Gemini 2.5-flash"
         }
     }
@@ -170,7 +164,7 @@ async def process_trip_planning(trip_id: str, trip_request: TripRequest):
         trip_store[trip_id]["current_step"] = "weather_analysis"
         
         # Run the orchestrator
-        result = await travel_orchestrator.plan_trip(trip_request)
+        result = await orchestrator.plan_trip(trip_request)
         
         # Update with results
         trip_store[trip_id]["status"] = "completed"
@@ -320,7 +314,7 @@ async def list_agents():
             }
         ],
         "orchestrator": {
-            "name": "travel_orchestrator",
+            "name": "TravelOrchestrator",
             "description": "Coordinates all agents in a structured workflow",
             "workflow_steps": ["weather_analysis", "route_planning", "event_discovery", "budget_optimization", "itinerary_creation", "train_search", "calendar_sync", "trip_summary"]
         }

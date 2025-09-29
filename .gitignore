@@ -26,6 +26,7 @@ share/python-wheels/
 *.egg
 MANIFEST
 credentials.json
+token.json
 # Virtual environments
 .env
 .venv

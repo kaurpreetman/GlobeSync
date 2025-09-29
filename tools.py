@@ -3,8 +3,7 @@ import httpx
 import json
 import re
 from datetime import datetime, timedelta
-from bs4 import BeautifulSoup
-from duckduckgo_search import AsyncDDGS
+from duckduckgo_search import DDGS
 from langchain_google_genai import ChatGoogleGenerativeAI
 from langchain_core.messages import HumanMessage
 from models import WeatherData, Event, Location, RouteDetails, BudgetOptions, CalendarIntegrationResult, CalendarEvent
@@ -36,80 +35,82 @@ class WeatherTool:
             }
     
     async def get_weather_forecast(self, location: str, start_date: datetime, end_date: datetime) -> WeatherData:
-        """Get weather forecast for a location and date range using OpenWeatherMap One Call API 3.0"""
+        """Get weather forecast for a location and date range using OpenWeatherMap Current Weather API 2.5"""
         try:
             if not settings.WEATHER_API_KEY:
                 raise Exception("OpenWeatherMap API key is required. Please set WEATHER_API_KEY in your environment.")
             
             async with httpx.AsyncClient() as client:
-                # Get coordinates for the location
-                coordinates = await self._get_coordinates(location)
-                
-                # Use OpenWeatherMap One Call API 3.0 format
-                onecall_url = "https://api.openweathermap.org/data/3.0/onecall"
+                # Use OpenWeatherMap Current Weather API 2.5 format
+                weather_url = "https://api.openweathermap.org/data/2.5/weather"
                 params = {
-                    "lat": coordinates["lat"],
-                    "lon": coordinates["lon"],
-                    "exclude": "minutely,alerts",  # Exclude minutely and alerts to reduce response size
+                    "q": location,
                     "appid": settings.WEATHER_API_KEY,
                     "units": "metric"
                 }
                 
-                response = await client.get(onecall_url, params=params)
+                response = await client.get(weather_url, params=params)
                 response.raise_for_status()
                 
                 weather_data = response.json()
                 
-                # Process the response data
-                current = weather_data.get("current", {})
-                daily_forecasts = weather_data.get("daily", [])
+                # Process the response data from Current Weather API 2.5
+                main = weather_data.get("main", {})
+                weather_info = weather_data.get("weather", [{}])[0]
+                wind = weather_data.get("wind", {})
+                clouds = weather_data.get("clouds", {})
                 
-                # Extract daily forecast data
+                # Extract current conditions
+                current_temp = main.get("temp", 20)
+                feels_like = main.get("feels_like", current_temp)
+                humidity = main.get("humidity", 50)
+                temp_min = main.get("temp_min", current_temp - 5)
+                temp_max = main.get("temp_max", current_temp + 5)
+                
+                weather_condition = weather_info.get("main", "clear").lower()
+                weather_description = weather_info.get("description", "clear sky")
+                
+                wind_speed = wind.get("speed", 5)
+                cloudiness = clouds.get("all", 20)  # Cloud coverage percentage
+                
+                # Estimate precipitation chance from cloudiness
+                precipitation_chance = min(cloudiness / 100, 0.8)  # Convert cloudiness to precipitation probability
+                
+                # Create a simple forecast (since 2.5 API only gives current weather)
+                current_date = datetime.now()
                 forecast_days = []
-                temp_min, temp_max = float('inf'), float('-inf')
                 
-                for day_data in daily_forecasts[:7]:  # Get up to 7 days
-                    day_temp = day_data.get("temp", {})
-                    temp_high = day_temp.get("max", 20)
-                    temp_low = day_temp.get("min", 15)
-                    
-                    temp_min = min(temp_min, temp_low)
-                    temp_max = max(temp_max, temp_high)
-                    
-                    weather_condition = day_data.get("weather", [{}])[0]
+                # Generate a 3-day simple forecast based on current conditions
+                for i in range(3):
+                    forecast_date = current_date + timedelta(days=i)
+                    # Add some variation for future days
+                    temp_variation = (i * 2) - 2  # -2, 0, +2 degrees variation
                     
                     forecast_days.append({
-                        "date": datetime.fromtimestamp(day_data["dt"]).strftime("%Y-%m-%d"),
-                        "temp_high": temp_high,
-                        "temp_low": temp_low,
-                        "condition": weather_condition.get("main", "clear").lower(),
-                        "description": weather_condition.get("description", "clear sky"),
-                        "humidity": day_data.get("humidity", 50),
-                        "wind_speed": day_data.get("wind_speed", 5),
-                        "pop": day_data.get("pop", 0)  # Probability of precipitation
+                        "date": forecast_date.strftime("%Y-%m-%d"),
+                        "temp_high": temp_max + temp_variation,
+                        "temp_low": temp_min + temp_variation,
+                        "condition": weather_condition,
+                        "description": weather_description,
+                        "humidity": humidity,
+                        "wind_speed": wind_speed,
+                        "pop": precipitation_chance
                     })
-                
-                # Get current conditions
-                current_weather = current.get("weather", [{}])[0]
-                current_condition = current_weather.get("main", "clear").lower()
-                
-                # Calculate average precipitation chance
-                avg_precipitation = sum(day.get("pop", 0) for day in daily_forecasts[:3]) / min(3, len(daily_forecasts))
                 
                 processed_data = {
                     "location": location,
                     "forecast_data": {
                         "current": {
-                            "temp": current.get("temp", 20),
-                            "feels_like": current.get("feels_like", 20),
-                            "humidity": current.get("humidity", 50),
-                            "description": current_weather.get("description", "clear sky")
+                            "temp": current_temp,
+                            "feels_like": feels_like,
+                            "humidity": humidity,
+                            "description": weather_description
                         },
                         "daily": forecast_days
                     },
-                    "temperature_range": {"min": temp_min if temp_min != float('inf') else 15, "max": temp_max if temp_max != float('-inf') else 25},
-                    "conditions": current_condition,
-                    "precipitation_chance": avg_precipitation
+                    "temperature_range": {"min": temp_min, "max": temp_max},
+                    "conditions": weather_condition,
+                    "precipitation_chance": precipitation_chance
                 }
                 
                 return WeatherData(**processed_data)
@@ -394,17 +395,13 @@ class EventsTool:
             temperature=0.3
         )
     
-    async def _get_location_coordinates(self, location: str) -> Dict[str, float]:
-        """Get coordinates for location using the weather tool's geocoding"""
-        weather_tool_instance = WeatherTool()
-        return await weather_tool_instance._get_coordinates(location)
+
     
     async def _search_events_web(self, location: str, start_date: datetime, end_date: datetime, 
                                 categories: List[str] = None) -> List[Dict[str, Any]]:
         """Search for events using DuckDuckGo"""
         try:
-            from duckduckgo_search import AsyncDDGS
-            from bs4 import BeautifulSoup
+            from duckduckgo_search import DDGS
             import re
             
             # Create search queries for different types of events
@@ -431,29 +428,38 @@ class EventsTool:
             
             all_results = []
             
-            async with AsyncDDGS() as ddgs:
-                for query in base_queries[:3]:  # Limit to 3 queries to avoid overwhelming
-                    try:
-                        # Search for text results
-                        results = await ddgs.text(query, max_results=10)
+            # DDGS doesn't support async context manager, use synchronous approach
+            def search_sync(query):
+                try:
+                    with DDGS() as ddgs:
+                        return list(ddgs.text(query, max_results=10))
+                except Exception as e:
+                    print(f"Search error for query '{query}': {e}")
+                    return []
+            
+            for query in base_queries[:3]:  # Limit to 3 queries to avoid overwhelming
+                try:
+                    # Run synchronous search in executor
+                    import asyncio
+                    results = await asyncio.get_event_loop().run_in_executor(None, search_sync, query)
+                    
+                    for result in results:
+                        # Extract and clean content
+                        cleaned_result = {
+                            "title": result.get("title", ""),
+                            "body": result.get("body", ""),
+                            "url": result.get("href", ""),
+                            "source_query": query
+                        }
                         
-                        for result in results:
-                            # Extract and clean content
-                            cleaned_result = {
-                                "title": result.get("title", ""),
-                                "body": result.get("body", ""),
-                                "url": result.get("href", ""),
-                                "source_query": query
-                            }
-                            
-                            # Filter out irrelevant results
-                            if any(keyword in cleaned_result["title"].lower() or keyword in cleaned_result["body"].lower() 
-                                  for keyword in ["event", "concert", "show", "festival", "tour", "exhibition", "performance", "activity"]):
-                                all_results.append(cleaned_result)
-                        
-                    except Exception as search_error:
-                        print(f"Search error for query '{query}': {search_error}")
-                        continue
+                        # Filter out irrelevant results
+                        if any(keyword in cleaned_result["title"].lower() or keyword in cleaned_result["body"].lower() 
+                              for keyword in ["event", "concert", "show", "festival", "tour", "exhibition", "performance", "activity"]):
+                            all_results.append(cleaned_result)
+                    
+                except Exception as search_error:
+                    print(f"Search error for query '{query}': {search_error}")
+                    continue
             
             return all_results[:20]  # Limit total results
             
@@ -467,9 +473,6 @@ class EventsTool:
         try:
             if not settings.GEMINI_API_KEY:
                 raise Exception("Gemini API key is required. Please set GEMINI_API_KEY in your environment.")
-            
-            # Get location coordinates
-            coords = await self._get_location_coordinates(location)
             
             # Prepare the search results text for Gemini
             search_text = ""
@@ -540,10 +543,10 @@ class EventsTool:
                         start_time = datetime.fromisoformat(event_info["start_time"])
                         end_time = datetime.fromisoformat(event_info["end_time"])
                         
-                        # Create location object
+                        # Create location object (simplified without coordinates)
                         event_location = Location(
-                            lat=coords["lat"],
-                            lng=coords["lon"],
+                            lat=0.0,  # Default coordinates since we're not using them
+                            lng=0.0,
                             address=event_info.get("venue_address", location),
                             city=location.split(",")[0].strip(),
                             country=location.split(",")[-1].strip() if "," in location else "Unknown"
@@ -750,12 +753,10 @@ class AccommodationTool:
     """Tool for finding accommodations using real booking APIs"""
     
     async def _get_location_details(self, location: str) -> Dict[str, Any]:
-        """Get location details for accommodation search"""
-        weather_tool_instance = WeatherTool()
-        coords = await weather_tool_instance._get_coordinates(location)
+        """Get location details for accommodation search (simplified without coordinates)"""
         return {
-            "latitude": coords["lat"],
-            "longitude": coords["lon"],
+            "latitude": 0.0,  # Default coordinates since we're not using them
+            "longitude": 0.0,
             "city": location.split(",")[0].strip()
         }
     
@@ -1213,49 +1214,61 @@ class IRCTCTrainsTool:
     async def _search_train_prices_web(self, origin: str, destination: str, date: str) -> Dict[str, Any]:
         """Search for train prices using DuckDuckGo web search"""
         try:
-            async with AsyncDDGS() as ddgs:
-                # Search for train prices and booking information
-                search_query = f"train booking {origin} to {destination} price fare IRCTC {date}"
-                
-                results = []
-                async for result in ddgs.text(search_query, max_results=5):
-                    results.append({
-                        "title": result.get("title", ""),
-                        "url": result.get("href", ""),
-                        "snippet": result.get("body", "")
-                    })
-                
-                # Use Gemini to analyze the search results
-                llm = ChatGoogleGenerativeAI(
-                    model=settings.GEMINI_MODEL,
-                    google_api_key=settings.GEMINI_API_KEY,
-                    temperature=0.3
-                )
-                
-                analysis_prompt = f"""
-                Analyze these web search results for train travel from {origin} to {destination} on {date}.
-                Extract useful information about:
-                1. Typical price ranges for different classes (SL, 3A, 2A, 1A)
-                2. Popular trains on this route
-                3. Booking tips and recommendations
-                4. Travel time estimates
-                
-                Search Results:
-                {json.dumps(results, indent=2)}
-                
-                Provide a concise summary with practical information for travelers.
-                """
-                
-                messages = [HumanMessage(content=analysis_prompt)]
-                analysis = await llm.ainvoke(messages)
-                
-                return {
-                    "search_results": results,
-                    "price_analysis": analysis.content,
-                    "search_query": search_query,
-                    "route": f"{origin} → {destination}",
-                    "date": date
-                }
+            # DDGS doesn't support async context manager, use synchronous approach
+            def search_train_sync(query):
+                try:
+                    with DDGS() as ddgs:
+                        return list(ddgs.text(query, max_results=5))
+                except Exception as e:
+                    print(f"Train search error: {e}")
+                    return []
+            
+            # Search for train prices and booking information
+            search_query = f"train booking {origin} to {destination} price fare IRCTC {date}"
+            
+            # Run synchronous search in executor
+            import asyncio
+            search_results = await asyncio.get_event_loop().run_in_executor(None, search_train_sync, search_query)
+            
+            results = []
+            for result in search_results:
+                results.append({
+                    "title": result.get("title", ""),
+                    "url": result.get("href", ""),
+                    "snippet": result.get("body", "")
+                })
+            
+            # Use Gemini to analyze the search results
+            llm = ChatGoogleGenerativeAI(
+                model=settings.GEMINI_MODEL,
+                google_api_key=settings.GEMINI_API_KEY,
+                temperature=0.3
+            )
+            
+            analysis_prompt = f"""
+            Analyze these web search results for train travel from {origin} to {destination} on {date}.
+            Extract useful information about:
+            1. Typical price ranges for different classes (SL, 3A, 2A, 1A)
+            2. Popular trains on this route
+            3. Booking tips and recommendations
+            4. Travel time estimates
+            
+            Search Results:
+            {json.dumps(results, indent=2)}
+            
+            Provide a concise summary with practical information for travelers.
+            """
+            
+            messages = [HumanMessage(content=analysis_prompt)]
+            analysis = await llm.ainvoke(messages)
+            
+            return {
+                "search_results": results,
+                "price_analysis": analysis.content,
+                "search_query": search_query,
+                "route": f"{origin} → {destination}",
+                "date": date
+            }
                 
         except Exception as e:
             return {
@@ -1661,66 +1674,88 @@ class AmadeusFlightsTool:
     async def _search_flight_prices_web(self, origin: str, destination: str, date: str) -> Dict[str, Any]:
         """Search for flight prices using DuckDuckGo web search"""
         try:
-            async with AsyncDDGS() as ddgs:
-                # Search for flight prices and booking information
-                search_query = f"flights {origin} to {destination} price cheap tickets {date}"
-                
-                results = []
-                async for result in ddgs.text(search_query, max_results=8):
-                    results.append({
-                        "title": result.get("title", ""),
-                        "url": result.get("href", ""),
-                        "snippet": result.get("body", "")
-                    })
-                
-                # Also search for airline-specific information
-                airline_query = f"airline tickets {origin} {destination} booking {date}"
-                airline_results = []
-                async for result in ddgs.text(airline_query, max_results=5):
-                    airline_results.append({
-                        "title": result.get("title", ""),
-                        "url": result.get("href", ""),
-                        "snippet": result.get("body", "")
-                    })
-                
-                # Use Gemini to analyze the search results
-                llm = ChatGoogleGenerativeAI(
-                    model=settings.GEMINI_MODEL,
-                    google_api_key=settings.GEMINI_API_KEY,
-                    temperature=0.3
-                )
-                
-                analysis_prompt = f"""
-                Analyze these web search results for flights from {origin} to {destination} on {date}.
-                Extract useful information about:
-                1. Typical price ranges (economy, business, first class)
-                2. Popular airlines on this route
-                3. Best booking websites and deals
-                4. Flight duration and direct vs connecting flights
-                5. Best time to book for this route
-                6. Alternative dates with better prices
-                
-                General Flight Results:
-                {json.dumps(results[:5], indent=2)}
-                
-                Airline-Specific Results:
-                {json.dumps(airline_results[:3], indent=2)}
-                
-                Provide a comprehensive summary with practical booking advice and price insights.
-                """
-                
-                messages = [HumanMessage(content=analysis_prompt)]
-                analysis = await llm.ainvoke(messages)
-                
-                return {
-                    "search_results": results,
-                    "airline_results": airline_results,
-                    "price_analysis": analysis.content,
-                    "search_queries": [search_query, airline_query],
-                    "route": f"{origin} → {destination}",
-                    "date": date,
-                    "total_results": len(results) + len(airline_results)
-                }
+            # DDGS doesn't support async context manager, use synchronous approach
+            def search_flights_sync(query):
+                try:
+                    with DDGS() as ddgs:
+                        return list(ddgs.text(query, max_results=8))
+                except Exception as e:
+                    print(f"Flight search error: {e}")
+                    return []
+            
+            def search_airlines_sync(query):
+                try:
+                    with DDGS() as ddgs:
+                        return list(ddgs.text(query, max_results=5))
+                except Exception as e:
+                    print(f"Airline search error: {e}")
+                    return []
+            
+            # Search for flight prices and booking information
+            search_query = f"flights {origin} to {destination} price cheap tickets {date}"
+            airline_query = f"airline tickets {origin} {destination} booking {date}"
+            
+            # Run synchronous searches in executor
+            import asyncio
+            results_task = asyncio.get_event_loop().run_in_executor(None, search_flights_sync, search_query)
+            airline_task = asyncio.get_event_loop().run_in_executor(None, search_airlines_sync, airline_query)
+            
+            search_results, airline_search_results = await asyncio.gather(results_task, airline_task)
+            
+            results = []
+            for result in search_results:
+                results.append({
+                    "title": result.get("title", ""),
+                    "url": result.get("href", ""),
+                    "snippet": result.get("body", "")
+                })
+            
+            airline_results = []
+            for result in airline_search_results:
+                airline_results.append({
+                    "title": result.get("title", ""),
+                    "url": result.get("href", ""),
+                    "snippet": result.get("body", "")
+                })
+            
+            # Use Gemini to analyze the search results
+            llm = ChatGoogleGenerativeAI(
+                model=settings.GEMINI_MODEL,
+                google_api_key=settings.GEMINI_API_KEY,
+                temperature=0.3
+            )
+            
+            analysis_prompt = f"""
+            Analyze these web search results for flights from {origin} to {destination} on {date}.
+            Extract useful information about:
+            1. Typical price ranges (economy, business, first class)
+            2. Popular airlines on this route
+            3. Best booking websites and deals
+            4. Flight duration and direct vs connecting flights
+            5. Best time to book for this route
+            6. Alternative dates with better prices
+            
+            General Flight Results:
+            {json.dumps(results[:5], indent=2)}
+            
+            Airline-Specific Results:
+            {json.dumps(airline_results[:3], indent=2)}
+            
+            Provide a comprehensive summary with practical booking advice and price insights.
+            """
+            
+            messages = [HumanMessage(content=analysis_prompt)]
+            analysis = await llm.ainvoke(messages)
+            
+            return {
+                "search_results": results,
+                "airline_results": airline_results,
+                "price_analysis": analysis.content,
+                "search_queries": [search_query, airline_query],
+                "route": f"{origin} → {destination}",
+                "date": date,
+                "total_results": len(results) + len(airline_results)
+            }
                 
         except Exception as e:
             return {

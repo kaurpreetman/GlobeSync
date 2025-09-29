@@ -4,13 +4,13 @@ from langgraph.checkpoint.memory import MemorySaver
 import operator
 from datetime import datetime
 
-from models import TravelRequest, AgentResponse
+from models import TripRequest, AgentResponse
 import agents
 
 
 class TravelPlanningState(TypedDict):
     """State object for the travel planning workflow"""
-    trip_request: TravelRequest
+    trip_request: TripRequest
     weather_data: Dict[str, Any]
     route_details: Dict[str, Any]
     events_data: Dict[str, Any]
@@ -241,7 +241,7 @@ class TravelOrchestrator:
                 "final_status": "error"
             }
 
-    async def plan_trip(self, request: TravelRequest, thread_id: str = None) -> Dict[str, Any]:
+    async def plan_trip(self, request: TripRequest, thread_id: str = None) -> Dict[str, Any]:
         """Main entry point for trip planning"""
         try:
             # Initialize state
