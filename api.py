@@ -620,15 +620,15 @@ async def get_calendar_setup_info():
         "scopes": settings.GOOGLE_CALENDAR_SCOPES
     }
 
-# 🤖 Setup Chat API Routes for Conversational Planning
+# 🤖 Setup Gemini-Powered Chat API Routes for Conversational Planning
 try:
-    from chat_api import setup_chat_routes
+    from chat_api_gemini import setup_chat_routes
     setup_chat_routes(app)
-    print("✅ Chat API routes successfully integrated")
+    print("✅ Gemini Chat API routes successfully integrated")
 except ImportError as e:
-    print(f"⚠️ Chat API not available: {e}")
+    print(f"⚠️ Gemini Chat API not available: {e}")
 except Exception as e:
-    print(f"❌ Error setting up chat API: {e}")
+    print(f"❌ Error setting up Gemini chat API: {e}")
 
 if __name__ == "__main__":
     import uvicorn
