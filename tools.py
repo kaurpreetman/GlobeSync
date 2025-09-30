@@ -1798,7 +1798,7 @@ class AmadeusFlightsTool:
     
     async def search_flights_between_cities(self, origin_city: str, destination_city: str, 
                                           departure_date: datetime = None) -> List[Dict[str, Any]]:
-        """Search for flights between two cities"""
+        """Search for flights between cities using Amadeus API with intelligent fallbacks"""
         try:
             from models import FlightDetails, FlightSearchResult
             
@@ -1807,68 +1807,244 @@ class AmadeusFlightsTool:
             dest_code = await self._get_airport_code_with_gemini(destination_city)
             
             if origin_code == "XXX" or dest_code == "XXX":
-                return []  # Cannot search without valid airport codes
+                # Fallback to web search if airport codes not found
+                print(f"⚠️ Airport codes not found for {origin_city} → {destination_city}, using web search fallback")
+                return await self._search_flights_web_fallback(origin_city, destination_city, departure_date)
             
-            # For now, we'll use a mock flight search since Amadeus flight search 
-            # requires different endpoints and parameters
-            # In production, you would use the Flight Offers Search API
+            departure_date_str = departure_date.strftime("%Y-%m-%d") if departure_date else (datetime.now() + timedelta(days=7)).strftime("%Y-%m-%d")
             
-            flights = []
+            # Step 1: Check if direct flights are available using Amadeus Direct Destinations API
+            direct_flights = await self._get_direct_destinations(origin_code)
+            has_direct_flight = any(dest['iataCode'] == dest_code for dest in direct_flights.get('data', []))
             
-            # Mock flight data with realistic information
-            mock_flights = [
-                {
-                    "flight_number": "AI101",
-                    "carrier_code": "AI",
-                    "carrier_name": "Air India",
-                    "departure_time": "06:30",
-                    "arrival_time": "09:45",
-                    "duration": "3h 15m",
-                    "aircraft_type": "Boeing 737-800"
-                },
-                {
-                    "flight_number": "6E234",
-                    "carrier_code": "6E",
-                    "carrier_name": "IndiGo",
-                    "departure_time": "14:20",
-                    "arrival_time": "17:30",
-                    "duration": "3h 10m",
-                    "aircraft_type": "Airbus A320"
-                },
-                {
-                    "flight_number": "SG567",
-                    "carrier_code": "SG",
-                    "carrier_name": "SpiceJet",
-                    "departure_time": "19:45",
-                    "arrival_time": "22:55",
-                    "duration": "3h 10m",
-                    "aircraft_type": "Boeing 737-800"
-                }
-            ]
-            
-            departure_date_str = departure_date.strftime("%Y-%m-%d") if departure_date else datetime.now().strftime("%Y-%m-%d")
-            
-            for flight_info in mock_flights:
-                flight = FlightDetails(
-                    flight_number=flight_info["flight_number"],
-                    carrier_code=flight_info["carrier_code"],
-                    carrier_name=flight_info["carrier_name"],
-                    departure_airport=origin_code,
-                    arrival_airport=dest_code,
-                    departure_time=flight_info["departure_time"],
-                    arrival_time=flight_info["arrival_time"],
-                    duration=flight_info["duration"],
-                    aircraft_type=flight_info.get("aircraft_type"),
-                    flight_date=departure_date_str,
-                    status="Scheduled"
-                )
+            if has_direct_flight:
+                print(f"✈️ Direct flights available: {origin_city} ({origin_code}) → {destination_city} ({dest_code})")
+                # Step 2: Get actual flight offers using Amadeus Flight Offers Search API
+                flight_offers = await self._search_flight_offers(origin_code, dest_code, departure_date_str)
                 
-                flights.append(flight.dict())
-            
-            return flights
+                if flight_offers:
+                    return self._format_flight_offers(flight_offers, origin_city, destination_city)
+                else:
+                    print(f"⚠️ No flight offers found via Amadeus API, using web search fallback")
+                    return await self._search_flights_web_fallback(origin_city, destination_city, departure_date)
+            else:
+                print(f"⚠️ No direct flights found: {origin_city} ({origin_code}) → {destination_city} ({dest_code})")
+                # Step 3: Find alternative routes and suggest connecting flights
+                return await self._find_alternative_routes(origin_city, origin_code, destination_city, dest_code, departure_date_str)
             
         except Exception as e:
-            raise Exception(f"Flight search between cities error: {str(e)}")
+            print(f"❌ Flight search error: {str(e)}")
+            # Ultimate fallback to web search
+            return await self._search_flights_web_fallback(origin_city, destination_city, departure_date)
+    
+    async def _get_direct_destinations(self, departure_airport_code: str) -> Dict[str, Any]:
+        """Get direct destinations from an airport using Amadeus API"""
+        try:
+            access_token = await self._get_access_token()
+            
+            async with httpx.AsyncClient() as client:
+                url = f"{self.base_url}/v1/airport/direct-destinations"
+                
+                headers = {
+                    "Authorization": f"Bearer {access_token}",
+                    "Content-Type": "application/json"
+                }
+                
+                params = {
+                    "departureAirportCode": departure_airport_code
+                    # We skip max and arrivalCountryCode as suggested
+                }
+                
+                response = await client.get(url, headers=headers, params=params)
+                response.raise_for_status()
+                
+                return response.json()
+                
+        except Exception as e:
+            print(f"❌ Amadeus Direct Destinations API error: {str(e)}")
+            return {"data": []}
+    
+    async def _search_flight_offers(self, origin_code: str, dest_code: str, departure_date: str, 
+                                  adults: int = 1) -> List[Dict[str, Any]]:
+        """Search for flight offers using Amadeus Flight Offers Search API"""
+        try:
+            access_token = await self._get_access_token()
+            
+            async with httpx.AsyncClient() as client:
+                url = f"{self.base_url}/v2/shopping/flight-offers"
+                
+                headers = {
+                    "Authorization": f"Bearer {access_token}",
+                    "Content-Type": "application/json"
+                }
+                
+                params = {
+                    "originLocationCode": origin_code,
+                    "destinationLocationCode": dest_code,
+                    "departureDate": departure_date,
+                    "adults": adults,
+                    "max": 10  # Limit results
+                }
+                
+                response = await client.get(url, headers=headers, params=params)
+                response.raise_for_status()
+                
+                flight_data = response.json()
+                return flight_data.get("data", [])
+                
+        except Exception as e:
+            print(f"❌ Amadeus Flight Offers Search API error: {str(e)}")
+            return []
+    
+    def _format_flight_offers(self, flight_offers: List[Dict[str, Any]], 
+                            origin_city: str, destination_city: str) -> List[Dict[str, Any]]:
+        """Format Amadeus flight offers into standardized format"""
+        formatted_flights = []
+        
+        for offer in flight_offers:
+            try:
+                # Extract flight details from Amadeus response
+                itineraries = offer.get("itineraries", [])
+                price = offer.get("price", {})
+                
+                for itinerary in itineraries:
+                    segments = itinerary.get("segments", [])
+                    duration = itinerary.get("duration", "N/A")
+                    
+                    if segments:
+                        first_segment = segments[0]
+                        last_segment = segments[-1]
+                        
+                        flight = {
+                            "flight_id": offer.get("id", "N/A"),
+                            "airline": first_segment.get("carrierCode", "N/A"),
+                            "flight_number": f"{first_segment.get('carrierCode', '')}{first_segment.get('number', '')}",
+                            "origin": origin_city,
+                            "destination": destination_city,
+                            "origin_airport": first_segment.get("departure", {}).get("iataCode", "N/A"),
+                            "destination_airport": last_segment.get("arrival", {}).get("iataCode", "N/A"),
+                            "departure_time": first_segment.get("departure", {}).get("at", "N/A"),
+                            "arrival_time": last_segment.get("arrival", {}).get("at", "N/A"),
+                            "duration": duration,
+                            "stops": len(segments) - 1,
+                            "price": {
+                                "total": price.get("total", "N/A"),
+                                "currency": price.get("currency", "USD"),
+                                "base": price.get("base", "N/A")
+                            },
+                            "aircraft": first_segment.get("aircraft", {}).get("code", "N/A"),
+                            "class": "Economy",  # Default, could be enhanced
+                            "source": "amadeus_api"
+                        }
+                        formatted_flights.append(flight)
+                        
+            except Exception as e:
+                print(f"⚠️ Error formatting flight offer: {str(e)}")
+                continue
+        
+        return formatted_flights
+    
+    async def _find_alternative_routes(self, origin_city: str, origin_code: str, 
+                                     destination_city: str, dest_code: str, 
+                                     departure_date: str) -> List[Dict[str, Any]]:
+        """Find alternative routes when no direct flights are available"""
+        try:
+            print(f"🔍 Finding alternative routes for {origin_city} → {destination_city}")
+            
+            # Get possible connecting airports from origin
+            direct_destinations = await self._get_direct_destinations(origin_code)
+            connecting_airports = direct_destinations.get("data", [])
+            
+            alternative_suggestions = []
+            
+            # Check if any of the connecting airports have flights to destination
+            for connecting_airport in connecting_airports[:5]:  # Check top 5 connections
+                connecting_code = connecting_airport.get("iataCode")
+                connecting_city = connecting_airport.get("name", connecting_code)
+                
+                if connecting_code:
+                    # Check if connecting airport has flights to destination
+                    connecting_destinations = await self._get_direct_destinations(connecting_code)
+                    
+                    has_connection_to_dest = any(
+                        dest['iataCode'] == dest_code 
+                        for dest in connecting_destinations.get('data', [])
+                    )
+                    
+                    if has_connection_to_dest:
+                        alternative_suggestions.append({
+                            "type": "connecting_flight",
+                            "route": f"{origin_city} → {connecting_city} → {destination_city}",
+                            "connecting_airport": connecting_code,
+                            "connecting_city": connecting_city,
+                            "origin_to_connecting": f"{origin_code} → {connecting_code}",
+                            "connecting_to_destination": f"{connecting_code} → {dest_code}",
+                            "message": f"Consider flying {origin_city} to {destination_city} via {connecting_city}",
+                            "source": "amadeus_route_analysis"
+                        })
+            
+            # Add web search fallback suggestion
+            web_results = await self._search_flights_web_fallback(origin_city, destination_city, departure_date)
+            
+            # Combine alternative suggestions with web search results
+            combined_results = alternative_suggestions + web_results
+            
+            if not combined_results:
+                # Final fallback: suggest train/other transport options
+                combined_results.append({
+                    "type": "alternative_transport",
+                    "message": f"No direct flights found between {origin_city} and {destination_city}. Consider alternative transport options like trains or nearby airports.",
+                    "suggestions": [
+                        f"Check train options from {origin_city} to {destination_city}",
+                        f"Look for flights from nearby airports",
+                        f"Consider multi-city trip with stops"
+                    ],
+                    "source": "system_suggestion"
+                })
+            
+            return combined_results
+            
+        except Exception as e:
+            print(f"❌ Error finding alternative routes: {str(e)}")
+            return await self._search_flights_web_fallback(origin_city, destination_city, departure_date)
+    
+    async def _search_flights_web_fallback(self, origin_city: str, destination_city: str, 
+                                         departure_date: datetime) -> List[Dict[str, Any]]:
+        """Fallback flight search using web search and AI analysis"""
+        try:
+            date_str = departure_date.strftime("%Y-%m-%d") if departure_date else (datetime.now() + timedelta(days=7)).strftime("%Y-%m-%d")
+            
+            # Use existing web search method
+            web_data = await self._search_flight_prices_web(origin_city, destination_city, date_str)
+            
+            # Format web search results as flight suggestions
+            web_flights = []
+            
+            if web_data.get("search_results"):
+                web_flights.append({
+                    "type": "web_search_results",
+                    "origin": origin_city,
+                    "destination": destination_city,
+                    "departure_date": date_str,
+                    "price_analysis": web_data.get("price_analysis", "No pricing information available"),
+                    "booking_suggestions": [
+                        "Check major booking sites like Expedia, Kayak, or airline websites",
+                        "Consider flexible dates for better prices",
+                        "Book in advance for better deals"
+                    ],
+                    "search_results_count": len(web_data.get("search_results", [])),
+                    "source": "web_search_fallback"
+                })
+            
+            return web_flights
+            
+        except Exception as e:
+            print(f"❌ Web search fallback error: {str(e)}")
+            return [{
+                "type": "error_fallback",
+                "message": f"Unable to find flights between {origin_city} and {destination_city}. Please try different cities or contact a travel agent.",
+                "source": "error_handler"
+            }]
     
     async def get_flight_recommendations(self, origin_city: str, destination_city: str,
                                        departure_date: datetime = None,
