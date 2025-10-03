@@ -1,18 +1,22 @@
-"""
-🤖 Gemini-Powered Chat API for Conversational Travel Planning
-This module uses Gemini AI to intelligently handle all chat interactions and tool decisions
-"""
-
 from fastapi import WebSocket, WebSocketDisconnect, HTTPException
 from typing import Dict, List, Any
 import json
 import asyncio
 from datetime import datetime, timedelta
 from langchain_google_genai import ChatGoogleGenerativeAI
-from langchain_core.messages import HumanMessage, SystemMessage
-
+import dateparser 
 from tools import WeatherTool, AmadeusFlightsTool, IRCTCTrainsTool, EventsTool, AccommodationTool, MapsTool
 from config import settings
+
+# --- Utility for safe serialization ---
+def safe_json(obj: Any) -> Any:
+    try:
+        return json.loads(json.dumps(obj, default=str))
+    except Exception:
+        try:
+            return obj.dict()
+        except Exception:
+            return str(obj)
 
 class ConnectionManager:
     """Manages WebSocket connections for real-time chat"""
@@ -58,7 +62,6 @@ class GeminiChatOrchestrator:
         }
     
     def get_user_context(self, user_id: str) -> Dict[str, Any]:
-        """Get or create user context"""
         if user_id not in self.user_sessions:
             self.user_sessions[user_id] = {
                 "basic_info": {},
@@ -70,236 +73,158 @@ class GeminiChatOrchestrator:
         return self.user_sessions[user_id]
     
     def add_to_conversation_history(self, user_id: str, role: str, content: str):
-        """Add message to conversation history"""
         context = self.get_user_context(user_id)
         context["conversation_history"].append({
             "role": role,
             "content": content,
             "timestamp": datetime.now().isoformat()
         })
-        # Keep only last 10 messages to avoid token limit
         if len(context["conversation_history"]) > 10:
             context["conversation_history"] = context["conversation_history"][-10:]
     
     async def process_user_message(self, user_id: str, message: str) -> Dict[str, Any]:
-        """Process user message through Gemini and decide on actions"""
-        
         context = self.get_user_context(user_id)
         self.add_to_conversation_history(user_id, "user", message)
         
-        # Create system prompt for Gemini
         system_prompt = f"""
 You are an expert travel planning assistant. Your job is to help users plan their trips by:
 
-1. **STRICTLY follow these rules:**
-   - DO NOT hallucinate or make up any information
-   - Only use information provided by the user or from tool calls
-   - If you don't have enough information, ask the user specific questions
-   - Never invent flight prices, hotel rates, or event details
-   - Always be honest if you need to call tools to get real data
+Rules:
+- DO NOT hallucinate.
+- Use only tool data or user-provided info.
+- Ask if missing information.
+- Never invent prices or details.
 
-2. **Available Tools:**
-   - weather: Get weather forecast for locations
-   - flights: Search for flight options and prices
-   - trains: Search for train options (mainly India)
-   - events: Find events and activities in destinations
-   - accommodation: Find hotels and accommodations
-   - maps: Get route information and directions
+Tools available:
+weather, flights, trains, events, accommodation, maps.
 
-3. **Decision Making:**
-   - If user asks about weather, flights, trains, events, or accommodations: suggest calling the appropriate tool
-   - If you have enough information to answer: provide a helpful response
-   - If user needs recommendations: offer relevant suggestions based on their preferences
+User Context:
+{json.dumps(context.get('basic_info', {}), indent=2)}
 
-4. **Current User Context:**
-   Basic Info: {context.get('basic_info', 'Not provided yet')}
-   Preferences: {context.get('preferences', 'Not shared yet')}
-   Previous Tool Data: {list(context.get('tool_data', {}).keys())}
-
-5. **Conversation History:**
+Conversation History (last 5):
 {json.dumps(context['conversation_history'][-5:], indent=2)}
 
-**User's Current Message:** "{message}"
+User Message: "{message}"
 
-Based on this, decide what to do:
-- If you need to call a tool, respond with: TOOL_CALL: [tool_name] with [parameters]
-- If you can answer directly, provide a helpful response
-- If you need more info, ask specific questions
-- Always be concise and conversational
-
-Your response:"""
-
+Respond with either:
+- TOOL_CALL: [tool_name] with [parameters]
+- OR a direct answer
+- OR a clarifying question
+"""
         try:
-            # Call Gemini for decision making
             response = await self.llm.ainvoke(system_prompt)
             gemini_response = response.content.strip()
-            
-            # Check if Gemini wants to call a tool
-            if gemini_response.startswith("TOOL_CALL:"):
+
+            # Normalize tool call detection
+            if gemini_response.lower().startswith("tool_call:") or "tool_call:" in gemini_response.lower():
                 return await self.handle_tool_call(user_id, gemini_response, message)
-            else:
-                # Direct response from Gemini
-                self.add_to_conversation_history(user_id, "assistant", gemini_response)
-                return {
-                    "type": "message",
-                    "message": gemini_response,
-                    "suggested_responses": self.generate_suggestions(gemini_response, context),
-                    "has_tool_data": bool(context.get("tool_data"))
-                }
+            
+            # Direct conversational reply
+            self.add_to_conversation_history(user_id, "assistant", gemini_response)
+            return {
+                "type": "message",
+                "message": gemini_response,
+                "suggested_responses": self.generate_suggestions(gemini_response, context),
+                "has_tool_data": bool(context.get("tool_data"))
+            }
                 
         except Exception as e:
-            error_message = "I'm having trouble processing your request. Could you please try again?"
             return {
                 "type": "error",
-                "message": error_message,
+                "message": "I'm having trouble processing your request. Please try again.",
                 "error_details": str(e)
             }
     
     async def handle_tool_call(self, user_id: str, tool_instruction: str, original_message: str) -> Dict[str, Any]:
-        """Handle tool calls based on Gemini's decision"""
-        
         context = self.get_user_context(user_id)
-        
+        tool_part = tool_instruction.replace("TOOL_CALL:", "").strip().lower()
+
         try:
-            # Parse tool instruction
-            tool_part = tool_instruction.replace("TOOL_CALL:", "").strip()
-            
-            # Send typing indicator
-            typing_message = "🤖 Let me get the latest information for you..."
-            
-            # Determine which tool to call based on the instruction
-            if "weather" in tool_part.lower():
+            if "weather" in tool_part:
                 location = self.extract_location_from_context(context, original_message)
-                if location:
-                    weather_data = await self.tools["weather"].get_weather_forecast(
-                        location, 
-                        datetime.now(), 
-                        datetime.now() + timedelta(days=7)
-                    )
-                    context["tool_data"]["weather"] = weather_data.dict() if hasattr(weather_data, 'dict') else weather_data
-                    
-                    # Ask Gemini to interpret the weather data
-                    response = await self.interpret_tool_data(user_id, "weather", weather_data, original_message)
-                    return response
-                else:
-                    return {
-                        "type": "message",
-                        "message": "Which city would you like me to check the weather for?",
-                        "suggested_responses": ["Paris", "London", "Tokyo", "New York"]
-                    }
-            
-            elif "flight" in tool_part.lower():
-                # Extract flight search parameters
-                basic_info = context.get("basic_info", {})
-                origin = basic_info.get("origin", "Current Location")
+                if not location:
+                    return {"type": "message","message": "Which city should I check the weather for?","suggested_responses":["Paris","London","Tokyo","Mumbai"]}
+                weather_data = await self.tools["weather"].get_weather_forecast(location, datetime.now(), datetime.now()+timedelta(days=7))
+                context["tool_data"]["weather"] = safe_json(weather_data)
+                return await self.interpret_tool_data(user_id, "weather", weather_data, original_message)
+
+          # install: pip install dateparser
+
+            elif "flight" in tool_part:
+                origin = context.get("basic_info", {}).get("origin", "Delhi")
                 destination = self.extract_location_from_context(context, original_message)
-                
-                if destination:
-                    flights_data = await self.tools["flights"].search_flights(
-                        origin, destination, datetime.now() + timedelta(days=30)
-                    )
-                    context["tool_data"]["flights"] = flights_data
-                    
-                    response = await self.interpret_tool_data(user_id, "flights", flights_data, original_message)
-                    return response
-                else:
+
+                if not destination:
                     return {
-                        "type": "message",
-                        "message": "Where would you like to fly to?",
-                        "suggested_responses": ["Paris, France", "London, UK", "Tokyo, Japan", "New York, USA"]
+                        "type":"message",
+                        "message":"Where would you like to fly to?",
+                        "suggested_responses":["Paris","London","Tokyo","New York"]
                     }
-            
-            elif "train" in tool_part.lower():
-                # Extract train search parameters
+
+                # Parse dates from user message if available
+                dep_date = dateparser.parse(original_message, settings={'PREFER_DATES_FROM': 'future'})
+                ret_date = None
+                if "return" in context.get("basic_info", {}):
+                    ret_date = dateparser.parse(context["basic_info"]["return"])
+
+                if not dep_date:
+                    # fallback: 30 days later
+                    dep_date = datetime.now() + timedelta(days=30)
+
+                flights_data = await self.tools["flights"].search_flights(
+                    origin,
+                    destination,
+                    dep_date.strftime("%Y-%m-%d"),
+                    return_date=ret_date.strftime("%Y-%m-%d") if ret_date else None
+                )
+
+                context["tool_data"]["flights"] = safe_json(flights_data)
+                return await self.interpret_tool_data(user_id,"flights",flights_data,original_message)
+
+
+            elif "train" in tool_part:
                 destination = self.extract_location_from_context(context, original_message)
-                if destination:
-                    trains_data = await self.tools["trains"].search_trains_between_cities(
-                        "Delhi", destination, datetime.now() + timedelta(days=30)
-                    )
-                    context["tool_data"]["trains"] = trains_data
-                    
-                    response = await self.interpret_tool_data(user_id, "trains", trains_data, original_message)
-                    return response
-                else:
-                    return {
-                        "type": "message", 
-                        "message": "Which city in India would you like to travel to by train?",
-                        "suggested_responses": ["Mumbai", "Bangalore", "Chennai", "Kolkata"]
-                    }
-            
-            elif "event" in tool_part.lower():
+                if not destination:
+                    return {"type":"message","message":"Which city in India would you like to travel to by train?","suggested_responses":["Mumbai","Bangalore","Chennai","Kolkata"]}
+                trains_data = await self.tools["trains"].search_trains_between_cities("Delhi",destination,datetime.now()+timedelta(days=30))
+                context["tool_data"]["trains"] = safe_json(trains_data)
+                return await self.interpret_tool_data(user_id,"trains",trains_data,original_message)
+
+            elif "event" in tool_part:
                 location = self.extract_location_from_context(context, original_message)
-                if location:
-                    events_data = await self.tools["events"].find_events(
-                        location,
-                        datetime.now(),
-                        datetime.now() + timedelta(days=30),
-                        ["entertainment", "cultural", "sightseeing"]
-                    )
-                    context["tool_data"]["events"] = [event.dict() if hasattr(event, 'dict') else event for event in events_data]
-                    
-                    response = await self.interpret_tool_data(user_id, "events", events_data, original_message)
-                    return response
-                else:
-                    return {
-                        "type": "message",
-                        "message": "Which city would you like me to find events and activities for?",
-                        "suggested_responses": ["Paris", "London", "Tokyo", "New York"]
-                    }
-            
+                if not location:
+                    return {"type":"message","message":"Which city should I look for events in?","suggested_responses":["Paris","London","Tokyo","New York"]}
+                events_data = await self.tools["events"].find_events(location,datetime.now(),datetime.now()+timedelta(days=30),["entertainment","cultural","sightseeing"])
+                context["tool_data"]["events"] = safe_json(events_data)
+                return await self.interpret_tool_data(user_id,"events",events_data,original_message)
+
             else:
-                # Generic tool call
                 return {
                     "type": "message",
-                    "message": f"{typing_message}\n\nI understand you need help with travel planning. Could you be more specific about what information you're looking for?",
-                    "suggested_responses": [
-                        "Check weather for my destination",
-                        "Find flights",
-                        "Search for trains", 
-                        "Discover local events",
-                        "Find accommodations"
-                    ]
+                    "message": "I understand you need help with travel planning. Could you clarify if you're asking about weather, flights, trains, events, or hotels?",
+                    "suggested_responses": ["Weather forecast","Find flights","Search for trains","Discover local events","Find accommodations"]
                 }
-                
         except Exception as e:
-            return {
-                "type": "error",
-                "message": "I encountered an issue while getting that information. Please try again.",
-                "error_details": str(e)
-            }
-    
+            return {"type":"error","message":"I encountered an issue while getting that information.","error_details":str(e)}
+
     async def interpret_tool_data(self, user_id: str, tool_type: str, tool_data: Any, original_message: str) -> Dict[str, Any]:
-        """Ask Gemini to interpret and present tool data"""
-        
         context = self.get_user_context(user_id)
-        
         interpretation_prompt = f"""
-You are a travel assistant. I just retrieved {tool_type} data for the user. Present this information in a helpful, conversational way.
+I retrieved {tool_type} data. Present this clearly and conversationally. 
+Do NOT make up info, only summarize what’s there.
 
-**IMPORTANT RULES:**
-- Present the data clearly and concisely
-- Do NOT add any information not in the tool data
-- Do NOT make up prices, times, or details
-- If data is limited, mention that
-- Provide practical advice based on the real data
-- Be conversational and helpful
+User Request: "{original_message}"
 
-**User's Original Request:** "{original_message}"
+{tool_type.title()} Data:
+{json.dumps(safe_json(tool_data), indent=2)}
 
-**{tool_type.title()} Data Retrieved:**
-{json.dumps(tool_data, indent=2, default=str)}
-
-**User Context:**
+User Context:
 {json.dumps(context.get('basic_info', {}), indent=2)}
-
-Provide a helpful response based on this real data:"""
-
+"""
         try:
             response = await self.llm.ainvoke(interpretation_prompt)
             interpreted_response = response.content.strip()
-            
             self.add_to_conversation_history(user_id, "assistant", interpreted_response)
-            
             return {
                 "type": "message",
                 "message": interpreted_response,
@@ -307,100 +232,66 @@ Provide a helpful response based on this real data:"""
                 "suggested_responses": self.generate_tool_based_suggestions(tool_type, context),
                 "has_tool_data": True
             }
-            
         except Exception as e:
-            fallback_message = f"I retrieved the {tool_type} information, but had trouble presenting it. The data is available if you'd like to ask specific questions about it."
-            return {
-                "type": "message",
-                "message": fallback_message,
-                "error_details": str(e)
-            }
-    
-    def extract_location_from_context(self, context: Dict, message: str) -> str:
-        """Extract location from user context or message"""
-        # Check basic info first
-        basic_info = context.get("basic_info", {})
-        if basic_info.get("destination"):
-            return basic_info["destination"]
-        if basic_info.get("city"):
-            return basic_info["city"]
-        
-        # Try to extract from current message
-        # This is a simple extraction - could be enhanced with NLP
-        common_cities = [
-            "Paris", "London", "Tokyo", "New York", "Mumbai", "Delhi", 
-            "Bangalore", "Chennai", "Kolkata", "Dubai", "Singapore"
-        ]
-        
-        message_lower = message.lower()
-        for city in common_cities:
-            if city.lower() in message_lower:
-                return city
-        
-        return None
-    
-    def generate_suggestions(self, response: str, context: Dict) -> List[str]:
-        """Generate contextual suggestion responses"""
-        
-        basic_suggestions = [
-            "That sounds good",
-            "Tell me more",
-            "What are my options?",
-            "Can you help with something else?"
-        ]
-        
-        # Add context-specific suggestions
-        if "weather" in response.lower():
-            basic_suggestions.extend(["What should I pack?", "Any outdoor activities?"])
-        
-        if "flight" in response.lower():
-            basic_suggestions.extend(["Check train options too", "Find accommodation"])
-        
-        if "event" in response.lower():
-            basic_suggestions.extend(["Find nearby restaurants", "Check weather"])
-        
-        return basic_suggestions[:6]  # Limit to 6 suggestions
-    
-    def generate_tool_based_suggestions(self, tool_type: str, context: Dict) -> List[str]:
-        """Generate suggestions based on tool type"""
-        
-        suggestions_map = {
-            "weather": [
-                "What should I pack?",
-                "Any weather-appropriate activities?",
-                "Find flights to this destination",
-                "Look for indoor activities"
-            ],
-            "flights": [
-                "Check train options too",
-                "Find accommodation near airport",
-                "What's the weather like there?",
-                "Discover local events"
-            ],
-            "trains": [
-                "Find accommodation near station",
-                "Check weather for destination",
-                "Discover local events",
-                "Compare with flight options"
-            ],
-            "events": [
-                "Find nearby restaurants",
-                "Check weather forecast",
-                "Look for accommodation",
-                "Find more activities"
-            ]
-        }
-        
-        return suggestions_map.get(tool_type, [
-            "That's helpful",
-            "What else can you help with?",
-            "Plan more of my trip",
-            "Find other options"
-        ])
+            return {"type":"message","message":f"I retrieved {tool_type} info but had trouble summarizing it.","error_details":str(e)}
 
-# Initialize global instances
+    async def extract_location_from_context(self, context, original_message: str) -> str:
+        """
+        Try to extract a destination location from context or user message.
+        Falls back to GeminiFlightsTool airport resolver if no common match found.
+        """
+
+        # Check if already stored in context
+        if "destination" in context.get("basic_info", {}):
+            return context["basic_info"]["destination"]
+
+        # Very simple regex match
+        import re
+        match = re.search(r"(?:to|for|in|at)\s+([A-Za-z\s]+)", original_message, re.IGNORECASE)
+        if match:
+            possible_dest = match.group(1).strip()
+            # Quick normalization for known cities
+            common_cities = [
+                "Paris","London","Tokyo","New York","Mumbai",
+                "Delhi","Bangalore","Chennai","Kolkata","Dubai","Singapore","Hyderabad"
+            ]
+            for city in common_cities:
+                if city.lower() in possible_dest.lower():
+                    return city
+
+        # 🚨 Fallback: Use Gemini airport resolver tool
+        try:
+            if "flights" in self.tools:
+                dest_info = await self.tools["flights"].resolve_airport_code(original_message)
+                if dest_info:
+                    # Prefer city if available, else airport code
+                    return dest_info.get("city") or dest_info.get("code")
+        except Exception as e:
+            print(f"⚠️ Destination resolution via Gemini failed: {e}")
+
+        return None
+
+
+    def generate_suggestions(self, response: str, context: Dict) -> List[str]:
+        suggestions = ["That sounds good","Tell me more","What are my options?","Can you help with something else?"]
+        if "weather" in response.lower(): suggestions.extend(["What should I pack?","Any outdoor activities?"])
+        if "flight" in response.lower(): suggestions.extend(["Check train options","Find accommodation"])
+        if "event" in response.lower(): suggestions.extend(["Find nearby restaurants","Check weather"])
+        return suggestions[:6]
+
+    def generate_tool_based_suggestions(self, tool_type: str, context: Dict) -> List[str]:
+        suggestions_map = {
+            "weather":["What should I pack?","Any weather-appropriate activities?","Find flights to this destination","Look for indoor activities"],
+            "flights":["Check train options too","Find accommodation near airport","What's the weather like there?","Discover local events"],
+            "trains":["Find accommodation near station","Check weather for destination","Discover local events","Compare with flight options"],
+            "events":["Find nearby restaurants","Check weather forecast","Look for accommodation","Find more activities"]
+        }
+        return suggestions_map.get(tool_type,["That's helpful","What else can you help with?","Plan more of my trip","Find other options"])
+
+# Global instances
 connection_manager = ConnectionManager()
 chat_orchestrator = GeminiChatOrchestrator()
+
 
 def setup_chat_routes(app):
     """Setup chat routes in the FastAPI app"""

@@ -7,7 +7,7 @@ name = "lgforglobe"
 version = "0.1.0"
 description = "LangGraph Travel Planning Backend with FastAPI using Gemini"
 readme = "README.md"
-requires-python = ">=3.12"
+requires-python = ">=3.11"
 dependencies = [
     "fastapi>=0.104.0",
     "uvicorn[standard]>=0.24.0",

@@ -1,6 +1,14 @@
+import asyncio
 import uvicorn
 from api import app
+from db.database import init_db
 from config import settings
+
+async def startup():
+    """Initialize all async resources before starting the server"""
+    print("🚀 Initializing database...")
+    await init_db()
+    print("✅ Database initialized!")
 
 def main():
     """Main entry point for the LangGraph Travel Planning API"""
@@ -11,7 +19,10 @@ def main():
     print("🎯 Available agents: Weather, Maps, Events, Budget, Itinerary")
     print("⚠️  PRODUCTION BACKEND - All API keys required (no mock data)")
     print("🔑 Check /api/v1/system/config for API key status")
-    
+
+    # Initialize DB before starting Uvicorn
+    asyncio.run(startup())
+
     uvicorn.run(
         "api:app",
         host=settings.HOST,

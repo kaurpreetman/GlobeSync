@@ -2045,8 +2045,31 @@ class AmadeusFlightsTool:
                 "message": f"Unable to find flights between {origin_city} and {destination_city}. Please try different cities or contact a travel agent.",
                 "source": "error_handler"
             }]
-    
-    async def get_flight_recommendations(self, origin_city: str, destination_city: str,
+    async def search_flights(self, origin_city: str, destination_city: str, departure_date: str, return_date: str = None):
+            """Wrapper so orchestrator can call a consistent method"""
+            try:
+                # Convert string date into datetime
+                from datetime import datetime
+                dep_date_obj = datetime.strptime(departure_date, "%Y-%m-%d")
+                return_date_obj = None
+                if return_date:
+                    return_date_obj = datetime.strptime(return_date, "%Y-%m-%d")
+
+                # Use your existing function
+                results = await self.search_flights_between_cities(origin_city, destination_city, dep_date_obj)
+
+                return {
+                    "flights": results,
+                    "origin": origin_city,
+                    "destination": destination_city,
+                    "departure_date": departure_date,
+                    "return_date": return_date
+                }
+            except Exception as e:
+                print(f"❌ search_flights wrapper error: {e}")
+                raise
+
+    async def get_flight_recommendations_basic(self, origin_city: str, destination_city: str,
                                        departure_date: datetime = None,
                                        preferences: Dict[str, Any] = None) -> Dict[str, Any]:
         """Get flight recommendations with AI analysis"""
@@ -2104,7 +2127,7 @@ class AmadeusFlightsTool:
         except Exception as e:
             raise Exception(f"Flight recommendations error: {str(e)}")
     
-    async def get_flight_recommendations(self, origin_city: str, destination_city: str, 
+    async def get_flight_recommendations_enhanced(self, origin_city: str, destination_city: str, 
                                        departure_date: str, return_date: str = None,
                                        preferences: Dict[str, Any] = None) -> Dict[str, Any]:
         """Get flight recommendations with enhanced web price search"""
@@ -2143,7 +2166,7 @@ class AmadeusFlightsTool:
             except:
                 raise Exception(f"Enhanced flight recommendations error: {str(e)}")
     
-    async def get_flight_recommendations_basic(self, origin_city: str, destination_city: str, 
+    async def get_flight_recommendations(self, origin_city: str, destination_city: str, 
                                              departure_date: str, preferences: Dict[str, Any] = None) -> Dict[str, Any]:
         """Basic flight recommendations (original method renamed)"""
         # This is the original get_flight_recommendations method content

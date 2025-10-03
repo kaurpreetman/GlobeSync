@@ -8,7 +8,7 @@ class Settings:
     # Gemini Configuration
     GEMINI_API_KEY: str = os.getenv("GEMINI_API_KEY", "")
     GEMINI_MODEL: str = "gemini-2.5-flash"
-    
+    MONGO_URI: str ="mongodb+srv://preetkaurpawar8_db_user:cgHndcuK5RlqTSSb@cluster0.nhvlyqr.mongodb.net/"
     # External API Keys
     WEATHER_API_KEY: str = os.getenv("WEATHER_API_KEY", "")
     # Maps now use OpenStreetMap data (no API key needed)
