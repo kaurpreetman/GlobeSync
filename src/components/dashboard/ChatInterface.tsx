@@ -1,40 +1,37 @@
-'use client';
+"use client";
 
-import React, { useState, useEffect, useRef } from 'react';
-import { motion } from 'framer-motion';
-import { Send, Bot, User, Loader as Loader2 } from 'lucide-react';
-import { Button } from '@/components/ui/button';
-import { Input } from '@/components/ui/input';
+import React, { useState, useEffect, useRef } from "react";
+import { motion } from "framer-motion";
+import { Send, Bot, User, Loader as Loader2 } from "lucide-react";
+import { Button } from "@/components/ui/button";
+import { Input } from "@/components/ui/input";
 
 interface Message {
   id: string;
-  role: 'user' | 'assistant';
+  role: "user" | "assistant" | "system";
   content: string;
   timestamp: Date;
+  suggested_responses?: string[];
 }
 
 interface ChatInterfaceProps {
   messages: Message[];
   onSendMessage: (message: string) => void;
+  isTyping: boolean;
 }
 
-const ChatInterface: React.FC<ChatInterfaceProps> = ({ messages, onSendMessage }) => {
-  const [input, setInput] = useState('');
-  const [isTyping, setIsTyping] = useState(false);
+const ChatInterface: React.FC<ChatInterfaceProps> = ({ messages, onSendMessage, isTyping }) => {
+  const [input, setInput] = useState("");
   const messagesEndRef = useRef<HTMLDivElement>(null);
 
-  const scrollToBottom = () => messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
-
-  useEffect(scrollToBottom, [messages]);
+  const scrollToBottom = () => messagesEndRef.current?.scrollIntoView({ behavior: "smooth" });
+  useEffect(scrollToBottom, [messages, isTyping]);
 
   const handleSubmit = (e: React.FormEvent) => {
     e.preventDefault();
     if (!input.trim()) return;
-
-    setIsTyping(true);
     onSendMessage(input.trim());
-    setInput('');
-    setTimeout(() => setIsTyping(false), 1500);
+    setInput("");
   };
 
   return (
@@ -46,36 +43,61 @@ const ChatInterface: React.FC<ChatInterfaceProps> = ({ messages, onSendMessage }
         </div>
         <div>
           <h3 className="font-semibold text-gray-900">AI Travel Assistant</h3>
-          <p className="text-xs text-gray-600">Always here to help</p>
+          <p className="text-xs text-gray-600">Ask about plans, transport, or budget</p>
         </div>
       </div>
 
       {/* Messages */}
       <div className="flex-1 overflow-y-auto p-4 space-y-4">
-        {messages.map(msg => (
+        {messages.map((msg) => (
           <motion.div
             key={msg.id}
             initial={{ opacity: 0, y: 10, scale: 0.95 }}
             animate={{ opacity: 1, y: 0, scale: 1 }}
-            transition={{ duration: 0.3, ease: 'easeOut' }}
-            className={`flex gap-3 ${msg.role === 'user' ? 'justify-end' : 'justify-start'}`}
+            transition={{ duration: 0.3, ease: "easeOut" }}
+            className={`flex flex-col gap-2 ${msg.role === "user" ? "items-end" : "items-start"}`}
           >
-            {msg.role === 'assistant' && (
-              <div className="w-8 h-8 rounded-full bg-gradient-to-r from-blue-100 to-indigo-100 flex items-center justify-center flex-shrink-0">
-                <Bot className="w-4 h-4 text-blue-600" />
+            {/* Bubble */}
+            <div className="flex gap-3">
+              {msg.role === "assistant" && (
+                <div className="w-8 h-8 rounded-full bg-gradient-to-r from-blue-100 to-indigo-100 flex items-center justify-center flex-shrink-0">
+                  <Bot className="w-4 h-4 text-blue-600" />
+                </div>
+              )}
+              <div
+                className={`max-w-[80%] rounded-2xl p-3 ${
+                  msg.role === "user"
+                    ? "bg-gradient-to-r from-blue-600 to-indigo-600 text-white"
+                    : msg.role === "system"
+                    ? "bg-gray-200 text-gray-600 italic"
+                    : "bg-gray-100 text-gray-900"
+                }`}
+              >
+                <p className="text-sm leading-relaxed">{msg.content}</p>
+                <span className="text-xs opacity-70 mt-1 block">
+                  {msg.timestamp.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}
+                </span>
               </div>
-            )}
-            <div className={`max-w-[80%] rounded-2xl p-3 ${
-              msg.role === 'user' ? 'bg-gradient-to-r from-blue-600 to-indigo-600 text-white' : 'bg-gray-100 text-gray-900'
-            }`}>
-              <p className="text-sm leading-relaxed">{msg.content}</p>
-              <span className="text-xs opacity-70 mt-1 block">
-                {msg.timestamp.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
-              </span>
+              {msg.role === "user" && (
+                <div className="w-8 h-8 rounded-full bg-gray-200 flex items-center justify-center flex-shrink-0">
+                  <User className="w-4 h-4 text-gray-600" />
+                </div>
+              )}
             </div>
-            {msg.role === 'user' && (
-              <div className="w-8 h-8 rounded-full bg-gray-200 flex items-center justify-center flex-shrink-0">
-                <User className="w-4 h-4 text-gray-600" />
+
+            {/* Suggested responses */}
+            {msg.role === "assistant" && msg.suggested_responses?.length > 0 && (
+              <div className="flex flex-wrap gap-2 ml-11">
+                {msg.suggested_responses.map((resp, i) => (
+                  <Button
+                    key={i}
+                    size="sm"
+                    variant="outline"
+                    onClick={() => onSendMessage(resp)}
+                  >
+                    {resp}
+                  </Button>
+                ))}
               </div>
             )}
           </motion.div>
@@ -83,7 +105,11 @@ const ChatInterface: React.FC<ChatInterfaceProps> = ({ messages, onSendMessage }
 
         {/* Typing Indicator */}
         {isTyping && (
-          <motion.div initial={{ opacity: 0, y: 10 }} animate={{ opacity: 1, y: 0 }} className="flex gap-3 justify-start">
+          <motion.div
+            initial={{ opacity: 0, y: 10 }}
+            animate={{ opacity: 1, y: 0 }}
+            className="flex gap-3 justify-start"
+          >
             <div className="w-8 h-8 rounded-full bg-gradient-to-r from-blue-100 to-indigo-100 flex items-center justify-center flex-shrink-0">
               <Bot className="w-4 h-4 text-blue-600" />
             </div>
@@ -93,7 +119,6 @@ const ChatInterface: React.FC<ChatInterfaceProps> = ({ messages, onSendMessage }
             </div>
           </motion.div>
         )}
-
         <div ref={messagesEndRef} />
       </div>
 
@@ -102,12 +127,16 @@ const ChatInterface: React.FC<ChatInterfaceProps> = ({ messages, onSendMessage }
         <div className="flex gap-2">
           <Input
             value={input}
-            onChange={e => setInput(e.target.value)}
-            placeholder="Ask for suggestions, help with planning..."
+            onChange={(e) => setInput(e.target.value)}
+            placeholder="Ask about flights, weather, or budget..."
             className="flex-1 border-gray-200 focus:border-blue-500 focus:ring-blue-500"
             disabled={isTyping}
           />
-          <Button type="submit" disabled={!input.trim() || isTyping} className="bg-gradient-to-r from-blue-600 to-indigo-600 hover:from-blue-700 hover:to-indigo-700">
+          <Button
+            type="submit"
+            disabled={!input.trim() || isTyping}
+            className="bg-gradient-to-r from-blue-600 to-indigo-600 hover:from-blue-700 hover:to-indigo-700"
+          >
             <Send className="w-4 h-4" />
           </Button>
         </div>
