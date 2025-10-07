@@ -141,12 +141,27 @@ Respond with either:
 
         try:
             if "weather" in tool_part:
-                location = self.extract_location_from_context(context, original_message)
+                location = await self.extract_location_from_context(context, original_message)
                 if not location:
-                    return {"type": "message","message": "Which city should I check the weather for?","suggested_responses":["Paris","London","Tokyo","Mumbai"]}
-                weather_data = await self.tools["weather"].get_weather_forecast(location, datetime.now(), datetime.now()+timedelta(days=7))
+                    return {
+                        "type": "message",
+                        "message": "Which city should I check the weather for?",
+                        "suggested_responses": ["Paris", "London", "Tokyo", "Mumbai"]
+                    }
+
+                # Parse requested date from user message
+                parsed_date = dateparser.parse(original_message, settings={'PREFER_DATES_FROM': 'future'})
+                if parsed_date is None:
+                    # fallback: current + 7 days
+                    start_date, end_date = datetime.now(), datetime.now() + timedelta(days=7)
+                else:
+                    # forecast only for that date
+                    start_date, end_date = parsed_date, parsed_date
+
+                weather_data = await self.tools["weather"].get_weather_forecast(location, start_date, end_date)
                 context["tool_data"]["weather"] = safe_json(weather_data)
                 return await self.interpret_tool_data(user_id, "weather", weather_data, original_message)
+
 
           # install: pip install dateparser
 
@@ -183,7 +198,7 @@ Respond with either:
 
 
             elif "train" in tool_part:
-                destination = self.extract_location_from_context(context, original_message)
+                destination = await self.extract_location_from_context(context, original_message)
                 if not destination:
                     return {"type":"message","message":"Which city in India would you like to travel to by train?","suggested_responses":["Mumbai","Bangalore","Chennai","Kolkata"]}
                 trains_data = await self.tools["trains"].search_trains_between_cities("Delhi",destination,datetime.now()+timedelta(days=30))

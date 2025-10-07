@@ -1,14 +1,14 @@
 import asyncio
 import uvicorn
 from api import app
-from db.database import init_db
+# from db.database import init_db
 from config import settings
 
 async def startup():
     """Initialize all async resources before starting the server"""
     print("🚀 Initializing database...")
-    await init_db()
-    print("✅ Database initialized!")
+    # await init_db()
+    # print("✅ Database initialized!")
 
 def main():
     """Main entry point for the LangGraph Travel Planning API"""
