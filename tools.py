@@ -1,63 +1,236 @@
 from typing import Dict, List, Any, Optional
 import httpx
 import json
-import re
+import re, logging
 from datetime import datetime, timedelta
 from duckduckgo_search import DDGS
 from langchain_google_genai import ChatGoogleGenerativeAI
+
+# Configure logging
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
 from langchain_core.messages import HumanMessage
 from models import WeatherData, Event, Location, RouteDetails, BudgetOptions, CalendarIntegrationResult, CalendarEvent
 from config import settings
 
+class TravelAssistantTool:
+    """Generic travel assistant tool powered by Gemini AI for non-specific queries"""
+    
+    def __init__(self):
+        self.llm = ChatGoogleGenerativeAI(
+            model=settings.GEMINI_MODEL,
+            google_api_key=settings.GEMINI_API_KEY,
+            temperature=0.3
+        )
+    
+    async def get_travel_advice(self, query: str, context: Dict[str, Any], conversation_history: List[Dict[str, Any]]) -> str:
+        """Generate contextual travel advice using Gemini AI"""
+        try:
+            if not query.strip():
+                logger.warning("Empty query received in get_travel_advice")
+                raise ValueError("Please provide a valid question or request.")
+
+            prompt = f"""
+            You are a highly knowledgeable travel assistant. Respond to the user's query while following these strict rules:
+            
+            1. NEVER make up or hallucinate information
+            2. Only use well-researched, factual information
+            3. If unsure, ask for clarification
+            4. Keep responses focused and concise
+            5. Consider user's previous context when relevant
+            
+            Available tools for detailed info:
+            - Weather forecasts (current and predictions)
+            - Flight searches and booking assistance
+            - Train schedules (especially for India)
+            - Local events and activities
+            - Accommodation searches
+            - Maps and directions
+            
+            Current user context:
+            {json.dumps(context, indent=2)}
+            
+            Recent conversation history:
+            {json.dumps(conversation_history[-3:], indent=2)}
+            
+            User's question: {query}
+            
+            Respond conversationally but accurately. If the user needs specific data (weather, flights, etc.), suggest using the appropriate tool.
+            """
+            
+            response = await self.llm.ainvoke(prompt)
+            if not response or not response.content:
+                logger.error("Empty response received from LLM")
+                raise RuntimeError("No response generated from the AI model.")
+                
+            return response.content.strip()
+            
+        except ValueError as e:
+            logger.warning(f"Invalid input in get_travel_advice: {e}")
+            raise
+        except Exception as e:
+            logger.error(f"Error generating travel advice: {e}", exc_info=True)
+            raise RuntimeError(f"Failed to generate travel advice: {str(e)}")
+
 class WeatherTool:
     """Tool for fetching weather data using OpenWeatherMap One Call API 3.0"""
+    
+    def __init__(self):
+        try:
+            if not settings.GEMINI_API_KEY:
+                logger.error("Missing Gemini API key")
+                raise ValueError("Gemini API key is required for WeatherTool initialization")
+            if not settings.WEATHER_API_KEY:
+                logger.error("Missing OpenWeatherMap API key")
+                raise ValueError("OpenWeatherMap API key is required for WeatherTool initialization")
+                
+            self.llm = ChatGoogleGenerativeAI(
+                model=settings.GEMINI_MODEL,
+                google_api_key=settings.GEMINI_API_KEY,
+                temperature=0.1  # Low temperature for more accurate name resolution
+            )
+        except Exception as e:
+            logger.error(f"Failed to initialize WeatherTool: {e}", exc_info=True)
+            raise
+    
+    async def _resolve_city_name(self, city: str) -> str:
+        """Resolve city name using Gemini AI to match OpenWeatherMap recognized names"""
+        try:
+            # Example pairs to help Gemini understand the task
+            examples = [
+                {"modern": "Prayagraj", "weather_api": "Allahabad"},
+                {"modern": "Bengaluru", "weather_api": "Bangalore"},
+                {"modern": "Mumbai", "weather_api": "Mumbai"},
+                {"modern": "Chennai", "weather_api": "Chennai"},
+                {"modern": "Kolkata", "weather_api": "Calcutta"},
+                {"modern": "Thiruvananthapuram", "weather_api": "Trivandrum"}
+            ]
+            
+            prompt = f"""
+            You are a city name resolver for weather APIs. Given a city name, return the most appropriate name that weather APIs would recognize.
+            Follow these rules:
+            1. If the city has a commonly used historical name in weather APIs, use that
+            2. For Indian cities that might have old British-era names, consider both versions
+            3. If unclear, add country code (e.g., "Delhi, IN")
+            4. If the name is already standard, keep it as is
+            5. Return ONLY the resolved name, nothing else
+
+            Examples:
+            {json.dumps(examples, indent=2)}
+
+            Resolve this city name: {city}
+            """
+
+            response = await self.llm.ainvoke(prompt)
+            resolved_name = response.content.strip()
+            
+            if resolved_name and resolved_name != city:
+                logger.info(f"Gemini resolved city name: {city} → {resolved_name}")
+            else:
+                logger.info(f"City name kept as is: {city}")
+            
+            return resolved_name or city
+            
+        except Exception as e:
+            logger.error(f"Error in city name resolution: {e}")
+            logger.info(f"Falling back to original city name: {city}")
+            if hasattr(e, '__await__'):
+                try:
+                    await e
+                except Exception as e_await:
+                    logger.error(f"Error awaiting coroutine: {e_await}")
+            return city
     
     async def _get_coordinates(self, location: str) -> Dict[str, float]:
         """Get latitude and longitude for a location using OpenWeatherMap Geocoding API"""
         async with httpx.AsyncClient() as client:
+            logger.info(f"Fetching coordinates for location: {location}")
             geocoding_url = "http://api.openweathermap.org/geo/1.0/direct"
             params = {
                 "q": location,
                 "limit": 1,
                 "appid": settings.WEATHER_API_KEY
             }
-            
-            response = await client.get(geocoding_url, params=params)
-            response.raise_for_status()
-            
-            data = response.json()
-            if not data:
-                raise Exception(f"Location '{location}' not found")
+            try:
+                response = await client.get(geocoding_url, params=params)
+                response.raise_for_status()
                 
-            return {
-                "lat": data[0]["lat"],
-                "lon": data[0]["lon"]
-            }
+                data = response.json()
+                logger.debug(f"Geocoding API response: {json.dumps(data, indent=2)}")
+                
+                if not data:
+                    logger.error(f"Location not found: {location}")
+                    raise ValueError(f"Location '{location}' not found in OpenWeatherMap database")
+                    
+                coords = {
+                    "lat": data[0]["lat"],
+                    "lon": data[0]["lon"]
+                }
+                logger.info(f"Successfully got coordinates for {location}: {coords}")
+                return coords
+                
+            except httpx.HTTPStatusError as e:
+                logger.error(f"HTTP error during geocoding: {e.response.status_code} - {e.response.text}")
+                if e.response.status_code == 401:
+                    raise ValueError("Invalid OpenWeatherMap API key")
+                elif e.response.status_code == 429:
+                    raise ValueError("OpenWeatherMap API rate limit exceeded")
+                raise ValueError(f"OpenWeatherMap Geocoding API error: {e}")
+                
+            except httpx.RequestError as e:
+                logger.error(f"Request error during geocoding: {e}")
+                raise ValueError(f"Network error while connecting to OpenWeatherMap: {e}")
     
     async def get_weather_forecast(self, location: str, start_date: datetime, end_date: datetime) -> WeatherData:
         """Get weather forecast for a location and date range using OpenWeatherMap Current Weather API 2.5"""
         try:
+            # Resolve city name first
+            resolved_location = await self._resolve_city_name(location)
+            logger.info(f"Using resolved location name: {resolved_location}")
+            
             if not settings.WEATHER_API_KEY:
-                raise Exception("OpenWeatherMap API key is required. Please set WEATHER_API_KEY in your environment.")
+                logger.error("Missing OpenWeatherMap API key")
+                raise ValueError("OpenWeatherMap API key is required. Please set WEATHER_API_KEY in your environment.")
+            
+            logger.info(f"Fetching weather forecast for {location} from {start_date} to {end_date}")
             
             async with httpx.AsyncClient() as client:
                 # Use OpenWeatherMap Current Weather API 2.5 format
                 weather_url = "https://api.openweathermap.org/data/2.5/weather"
                 params = {
-                    "q": location,
+                    "q": resolved_location,
                     "appid": settings.WEATHER_API_KEY,
                     "units": "metric"
                 }
                 
-                response = await client.get(weather_url, params=params)
-                response.raise_for_status()
-                
-                weather_data = response.json()
-                
-                # Process the response data from Current Weather API 2.5
-                main = weather_data.get("main", {})
-                weather_info = weather_data.get("weather", [{}])[0]
-                wind = weather_data.get("wind", {})
+                try:
+                    response = await client.get(weather_url, params=params)
+                    response.raise_for_status()
+                    weather_data = response.json()
+                    logger.debug(f"Weather API response: {json.dumps(weather_data, indent=2)}")
+                    
+                    # Process the response data from Current Weather API 2.5
+                    main = weather_data.get("main", {})
+                    weather_info = weather_data.get("weather", [{}])[0]
+                    wind = weather_data.get("wind", {})
+                    
+                    if not main or not weather_info:
+                        logger.error(f"Invalid weather data received for {location}")
+                        raise ValueError(f"Unable to get weather data for {location}")
+                    
+                    logger.info(f"Successfully fetched weather data for {location}")
+                    
+                except httpx.HTTPStatusError as e:
+                    logger.error(f"HTTP error fetching weather: {e.response.status_code} - {e.response.text}")
+                    if e.response.status_code == 401:
+                        raise ValueError("Invalid OpenWeatherMap API key")
+                    elif e.response.status_code == 429:
+                        raise ValueError("OpenWeatherMap API rate limit exceeded")
+                    raise ValueError(f"OpenWeatherMap API error: {e}")
+                    
+                except httpx.RequestError as e:
+                    logger.error(f"Request error fetching weather: {e}")
+                    raise ValueError(f"Network error while connecting to OpenWeatherMap: {e}")
                 clouds = weather_data.get("clouds", {})
                 
                 # Extract current conditions
@@ -297,8 +470,15 @@ class MapsTool:
                 transportation_mode=transport_mode
             )
             
+        except ValueError as e:
+            logger.error(f"Invalid location provided for route calculation: {e}")
+            raise ValueError(f"Invalid location: {str(e)}")
+        except httpx.HTTPError as e:
+            logger.error(f"HTTP error during route calculation: {e}")
+            raise RuntimeError(f"Failed to fetch route data: {str(e)}")
         except Exception as e:
-            raise Exception(f"Maps routing error: {str(e)}")
+            logger.error(f"Unexpected error during route calculation: {e}", exc_info=True)
+            raise RuntimeError(f"Maps routing error: {str(e)}")
     
     def _format_duration(self, duration_seconds: float) -> str:
         """Format duration from seconds to human readable format"""
@@ -434,8 +614,8 @@ class EventsTool:
                     with DDGS() as ddgs:
                         return list(ddgs.text(query, max_results=10))
                 except Exception as e:
-                    print(f"Search error for query '{query}': {e}")
-                    return []
+                    logger.error(f"Search error for query '{query}': {e}", exc_info=True)
+                    return []  # Continue with empty results for this query
             
             for query in base_queries[:3]:  # Limit to 3 queries to avoid overwhelming
                 try:
@@ -1489,78 +1669,6 @@ class AmadeusFlightsTool:
         except Exception as e:
             raise Exception(f"Amadeus authentication error: {str(e)}")
     
-    async def _get_airport_code_with_gemini(self, city_name: str) -> str:
-        """Use Gemini AI to get airport code from city name"""
-        try:
-            from langchain_google_genai import ChatGoogleGenerativeAI
-            
-            llm = ChatGoogleGenerativeAI(
-                model=settings.GEMINI_MODEL,
-                google_api_key=settings.GEMINI_API_KEY,
-                temperature=0.1
-            )
-            
-            prompt = f"""
-            What is the main international airport IATA code for {city_name}?
-            
-            Return ONLY the 3-letter IATA code (like LAX, JFK, LHR, etc.) for the main/largest airport serving this city.
-            If the city has multiple airports, return the primary international airport code.
-            If you're unsure, return the most commonly used airport code for that city.
-            
-            Examples:
-            - New York → JFK
-            - London → LHR  
-            - Paris → CDG
-            - Tokyo → NRT
-            - Mumbai → BOM
-            - Delhi → DEL
-            
-            City: {city_name}
-            Airport Code:
-            """
-            
-            response = await llm.ainvoke(prompt)
-            airport_code = response.content.strip().upper()
-            
-            # Validate it's a 3-letter code
-            if len(airport_code) == 3 and airport_code.isalpha():
-                return airport_code
-            else:
-                # Try to extract 3-letter code from response
-                import re
-                codes = re.findall(r'\b[A-Z]{3}\b', airport_code)
-                if codes:
-                    return codes[0]
-                else:
-                    # Fallback mapping for common cities
-                    fallback_mapping = {
-                        "new york": "JFK",
-                        "london": "LHR",
-                        "paris": "CDG",
-                        "tokyo": "NRT",
-                        "delhi": "DEL",
-                        "mumbai": "BOM",
-                        "bangalore": "BLR",
-                        "chennai": "MAA",
-                        "kolkata": "CCU",
-                        "hyderabad": "HYD",
-                        "pune": "PNQ",
-                        "ahmedabad": "AMD",
-                        "los angeles": "LAX",
-                        "chicago": "ORD",
-                        "miami": "MIA",
-                        "singapore": "SIN",
-                        "dubai": "DXB",
-                        "bangkok": "BKK",
-                        "sydney": "SYD"
-                    }
-                    
-                    city_lower = city_name.lower().strip()
-                    return fallback_mapping.get(city_lower, "XXX")  # XXX indicates unknown
-            
-        except Exception as e:
-            print(f"Error getting airport code with Gemini: {e}")
-            return "XXX"  # Unknown airport code
     
     async def resolve_airport_code(self, city_name: str) -> Dict[str, Any]:
         """Resolve city name to comprehensive airport information using Gemini AI"""
@@ -1608,59 +1716,20 @@ class AmadeusFlightsTool:
             messages = [HumanMessage(content=prompt)]
             response = await llm.ainvoke(messages)
             
-            # Parse the response to extract airport information
-            try:
-                json_match = re.search(r'\{.*\}', response.content, re.DOTALL)
-                if json_match:
-                    airport_info = json.loads(json_match.group())
-                    # Validate required fields
-                    if "airport_code" not in airport_info:
-                        airport_info["airport_code"] = "XXX"
-                    if "airport_name" not in airport_info:
-                        airport_info["airport_name"] = f"{city_name} Airport"
-                    return airport_info
-                else:
-                    raise ValueError("No JSON found in response")
-                    
-            except (json.JSONDecodeError, ValueError) as e:
-                # Enhanced fallback with common airports
-                common_airports = {
-                    "new york": {"airport_code": "JFK", "airport_name": "John F. Kennedy International Airport", "alternatives": [{"code": "LGA", "name": "LaGuardia Airport"}, {"code": "EWR", "name": "Newark Liberty International Airport"}]},
-                    "london": {"airport_code": "LHR", "airport_name": "Heathrow Airport", "alternatives": [{"code": "LGW", "name": "Gatwick Airport"}]},
-                    "paris": {"airport_code": "CDG", "airport_name": "Charles de Gaulle Airport", "alternatives": [{"code": "ORY", "name": "Orly Airport"}]},
-                    "delhi": {"airport_code": "DEL", "airport_name": "Indira Gandhi International Airport", "alternatives": []},
-                    "mumbai": {"airport_code": "BOM", "airport_name": "Chhatrapati Shivaji Maharaj International Airport", "alternatives": []},
-                    "bangalore": {"airport_code": "BLR", "airport_name": "Kempegowda International Airport", "alternatives": []},
-                    "chennai": {"airport_code": "MAA", "airport_name": "Chennai International Airport", "alternatives": []},
-                    "tokyo": {"airport_code": "NRT", "airport_name": "Narita International Airport", "alternatives": [{"code": "HND", "name": "Haneda Airport"}]},
-                    "singapore": {"airport_code": "SIN", "airport_name": "Singapore Changi Airport", "alternatives": []},
-                    "dubai": {"airport_code": "DXB", "airport_name": "Dubai International Airport", "alternatives": []},
-                    "los angeles": {"airport_code": "LAX", "airport_name": "Los Angeles International Airport", "alternatives": []},
-                    "chicago": {"airport_code": "ORD", "airport_name": "O'Hare International Airport", "alternatives": []}
-                }
+            json_match = re.search(r'\{.*\}', response.content, re.DOTALL)
+            if not json_match:
+                raise ValueError("No JSON found in response")
                 
-                city_key = city_name.lower().strip()
-                if city_key in common_airports:
-                    info = common_airports[city_key]
-                    return {
-                        "airport_code": info["airport_code"],
-                        "airport_name": info["airport_name"],
-                        "city": city_name,
-                        "country": "Unknown",
-                        "alternatives": info["alternatives"],
-                        "notes": f"Gemini parsing failed, using fallback data: {str(e)}"
-                    }
-                
-                return {
-                    "airport_code": "XXX",
-                    "airport_name": f"{city_name} Airport",
-                    "city": city_name,
-                    "country": "Unknown",
-                    "alternatives": [],
-                    "notes": f"Could not resolve airport code: {str(e)}"
-                }
+            airport_info = json.loads(json_match.group())
+            # Validate required fields
+            if "airport_code" not in airport_info:
+                airport_info["airport_code"] = "XXX"
+            if "airport_name" not in airport_info:
+                airport_info["airport_name"] = f"{city_name} Airport"
+            return airport_info
                 
         except Exception as e:
+            logger.error(f"Airport resolution error for {city_name}: {str(e)}")
             return {
                 "airport_code": "XXX",
                 "airport_name": f"{city_name} Airport",
@@ -1673,6 +1742,9 @@ class AmadeusFlightsTool:
     
     async def _search_flight_prices_web(self, origin: str, destination: str, date: str) -> Dict[str, Any]:
         """Search for flight prices using DuckDuckGo web search"""
+        results = []
+        airline_results = []
+        search_query = ""
         try:
             # DDGS doesn't support async context manager, use synchronous approach
             def search_flights_sync(query):
@@ -1756,16 +1828,17 @@ class AmadeusFlightsTool:
                 "date": date,
                 "total_results": len(results) + len(airline_results)
             }
-                
+            
         except Exception as e:
+            logger.error(f"Flight price search error: {str(e)}")
             return {
-                "search_results": [],
-                "airline_results": [],
-                "price_analysis": f"Unable to fetch web pricing data: {str(e)}",
-                "search_queries": [],
+                "search_results": results,  # Return any partial results we might have
+                "airline_results": airline_results,
+                "price_analysis": f"Unable to fetch complete pricing data: {str(e)}",
+                "search_queries": [search_query] if search_query else [],
                 "route": f"{origin} → {destination}",
                 "date": date,
-                "total_results": 0
+                "total_results": len(results) + len(airline_results)
             }
     
     async def get_flight_schedules(self, carrier_code: str, flight_number: str, 
@@ -1802,11 +1875,13 @@ class AmadeusFlightsTool:
         try:
             from models import FlightDetails, FlightSearchResult
             
-            # Get airport codes using Gemini
-            origin_code = await self._get_airport_code_with_gemini(origin_city)
-            dest_code = await self._get_airport_code_with_gemini(destination_city)
+            # Get airport information using Gemini
+            origin_info = await self.resolve_airport_code(origin_city)
+            dest_info = await self.resolve_airport_code(destination_city)
+            origin_code = origin_info['airport_code']
+            dest_code = dest_info['airport_code']
             
-            if origin_code == "XXX" or dest_code == "XXX":
+            if origin_code == "XXX" or dest_code == "XXX" or not origin_code or not dest_code:
                 # Fallback to web search if airport codes not found
                 print(f"⚠️ Airport codes not found for {origin_city} → {destination_city}, using web search fallback")
                 return await self._search_flights_web_fallback(origin_city, destination_city, departure_date)
@@ -2120,8 +2195,8 @@ class AmadeusFlightsTool:
                 "recommendations": response.content,
                 "route_analysis": f"Found {len(flights)} flights from {origin_city} to {destination_city}",
                 "search_timestamp": datetime.now().isoformat(),
-                "origin_airport": await self._get_airport_code_with_gemini(origin_city),
-                "destination_airport": await self._get_airport_code_with_gemini(destination_city)
+                "origin_airport": (await self.resolve_airport_code(origin_city))['airport_code'],
+                "destination_airport": (await self.resolve_airport_code(destination_city))['airport_code']
             }
             
         except Exception as e:

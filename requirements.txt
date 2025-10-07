@@ -1,0 +1,33 @@
+# Core dependencies
+fastapi>=0.68.0
+uvicorn>=0.15.0
+python-dotenv>=0.19.0
+httpx>=0.23.0
+
+# Google AI & Cloud
+langchain-google-genai>=0.0.3
+google-auth>=2.22.0
+google-auth-oauthlib>=1.0.0
+google-api-python-client>=2.0.0
+
+# Data handling and parsing
+pydantic>=1.8.2
+python-dateutil>=2.8.2
+dateparser>=1.1.8
+
+# Weather and Maps
+geopy>=2.3.0
+folium>=0.14.0
+
+# Search and Web
+duckduckgo-search>=3.9.0
+
+# Calendar and scheduling
+icalendar>=5.0.0
+
+# Logging and monitoring
+logging>=0.5.1
+
+# Testing
+pytest>=7.0.0
+pytest-asyncio>=0.21.0
