@@ -609,13 +609,28 @@ What would you like to know first about your trip to {city}?
         """Get current conversation context for a user"""
         
         context = chat_orchestrator.get_user_context(user_id)
+        basic_info = context.get("basic_info", {})
         
+        # Get coordinates for the destination city
+        maps_tool = MapsTool()
+        city = basic_info.get("city", "")
+        try:
+            if city:
+                location = await maps_tool._geocode_location(city)
+                map_center = [location.lat, location.lng]
+            else:
+                map_center = [0, 0]
+        except Exception as e:
+            logger.error(f"Error getting coordinates for {city}: {str(e)}")
+            map_center = [0, 0]
+            
         return {
             "user_id": user_id,
-            "basic_info": context.get("basic_info", {}),
+            "basic_info": basic_info,
             "conversation_length": len(context.get("conversation_history", [])),
             "available_tools": list(chat_orchestrator.tools.keys()),
-            "tool_data_available": list(context.get("tool_data", {}).keys())
+            "tool_data_available": list(context.get("tool_data", {}).keys()),
+            "map_center": map_center
         }
     
     @app.delete("/trip/session/{user_id}")
