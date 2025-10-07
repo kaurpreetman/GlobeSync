@@ -95,8 +95,28 @@ export default function TravelDashboard() {
     if (!sessionId) return;
     fetch(`http://localhost:8000/trip/context/${sessionId}`)
       .then((r) => r.json())
-      .then((ctx) => setTripContext(ctx))
-      .catch(console.error);
+      .then((ctx) => {
+        // Validate and format map coordinates
+        let mapCenter = [0, 0];
+        if (ctx.map_center && 
+            Array.isArray(ctx.map_center) && 
+            ctx.map_center.length === 2 && 
+            !isNaN(Number(ctx.map_center[0])) && 
+            !isNaN(Number(ctx.map_center[1]))) {
+          mapCenter = [Number(ctx.map_center[0]), Number(ctx.map_center[1])];
+        }
+        setTripContext({
+          ...ctx,
+          map_center: mapCenter
+        });
+      })
+      .catch((error) => {
+        console.error("Error fetching trip context:", error);
+        setTripContext(prev => ({
+          ...prev,
+          map_center: [0, 0]
+        }));
+      });
   }, [sessionId]);
 
   const handleSendMessage = (content: string) => {
@@ -147,8 +167,13 @@ export default function TravelDashboard() {
         >
           <div className="h-full bg-white rounded-xl shadow-lg overflow-hidden">
             <MapComponent
-              center={tripContext?.map_center || [0, 0]}
+              center={[0, 0]}
               locationName={tripContext?.basic_info?.city || ""}
+              destinationCoords={tripContext?.map_center}
+              locationType={tripContext?.basic_info?.locationType || 'city'}
+              customZoom={tripContext?.basic_info?.customZoom}
+              countryName={tripContext?.basic_info?.country}
+              region={tripContext?.basic_info?.region}
             />
           </div>
         </motion.div>
