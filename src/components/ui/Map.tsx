@@ -5,14 +5,20 @@ import "leaflet/dist/leaflet.css";
 import L from "leaflet";
 import { useEffect, useState } from "react";
 
+interface MapProps {
+  lat?: number;
+  lng?: number;
+  zoom?: number;
+  markers?: Array<{
+    position: [number, number];
+    name: string;
+  }>;
+}
+
 // Fix default marker icon
 const DefaultIcon = L.icon({
-  iconRetinaUrl:
-    "https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/images/marker-icon-2x.png",
-  iconUrl:
-    "https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/images/marker-icon.png",
-  shadowUrl:
-    "https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/images/marker-shadow.png",
+  iconUrl: "https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/images/marker-icon.png",
+  shadowUrl: "https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/images/marker-shadow.png",
   iconSize: [25, 41],
   iconAnchor: [12, 41],
   popupAnchor: [1, -34],
@@ -21,10 +27,11 @@ const DefaultIcon = L.icon({
 
 L.Marker.prototype.options.icon = DefaultIcon;
 
-const Map: React.FC<{ lat?: number; lng?: number; zoom?: number }> = ({
-  lat = 51.505,
-  lng = -0.09,
-  zoom = 13,
+const Map: React.FC<MapProps> = ({
+  lat = 20.5937, // Default to center of India
+  lng = 78.9629,
+  zoom = 5,
+  markers = []
 }) => {
   const [isClient, setIsClient] = useState(false);
 
@@ -44,11 +51,11 @@ const Map: React.FC<{ lat?: number; lng?: number; zoom?: number }> = ({
         url="https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png"
         attribution='&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors'
       />
-      <Marker position={[lat, lng]}>
-        <Popup>
-          Sample Marker at [{lat}, {lng}]
-        </Popup>
-      </Marker>
+      {markers.map((marker, index) => (
+        <Marker key={index} position={marker.position}>
+          <Popup>{marker.name}</Popup>
+        </Marker>
+      ))}
     </MapContainer>
   );
 };

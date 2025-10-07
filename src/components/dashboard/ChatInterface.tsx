@@ -5,6 +5,7 @@ import { motion } from "framer-motion";
 import { Send, Bot, User, Loader as Loader2 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
+import { MarkdownRenderer } from "@/components/ui/markdown-renderer";
 
 interface Message {
   id: string;
@@ -73,7 +74,9 @@ const ChatInterface: React.FC<ChatInterfaceProps> = ({ messages, onSendMessage, 
                     : "bg-gray-100 text-gray-900"
                 }`}
               >
-                <p className="text-sm leading-relaxed">{msg.content}</p>
+                <div className="text-sm leading-relaxed break-words">
+                  <MarkdownRenderer content={msg.content} />
+                </div>
                 <span className="text-xs opacity-70 mt-1 block">
                   {msg.timestamp.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}
                 </span>
