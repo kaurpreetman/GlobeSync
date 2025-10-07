@@ -239,8 +239,9 @@ Respond with either:
                 if params:
                     origin = params.get('departure_city') or params.get('origin')
                     destination = params.get('arrival_city') or params.get('destination')
-                    dep_date = dateparser.parse(params.get('departure_date')) if params.get('departure_date') else None
-                    
+                    dep_date = dateparser.parse(params.get('departure_date')) if params.get('departure_date')else None
+                    if not dep_date:
+                        dep_date=dateparser.parse(params.get('date')) if params.get('date') else None
                     if origin:
                         basic_info['origin'] = origin
                     if destination:
@@ -248,21 +249,21 @@ Respond with either:
                     context['basic_info'] = basic_info
                 
                 # If no origin in params, check context and user message
-                if not origin:
-                    origin = basic_info.get("origin")
-                    if not origin and "tool_data" not in context:
-                        # This is a direct response to origin question
-                        origin = original_message
-                        basic_info["origin"] = origin
-                        context["basic_info"] = basic_info
+                # if not origin:
+                #     origin = basic_info.get("origin")
+                #     if not origin and "tool_data" not in context:
+                #         # This is a direct response to origin question
+                #         origin = original_message
+                #         basic_info["origin"] = origin
+                #         context["basic_info"] = basic_info
                 
                 # If still no origin, ask user
                 
                 # If no destination in params, try to extract from context/message
-                if not destination:
-                    destination = basic_info.get("destination") or await self.extract_location_from_context(context, original_message)
+                # if not destination:
+                #     destination = basic_info.get("destination") or await self.extract_location_from_context(context, original_message)
                 
-                # If still no destination, ask user
+                # # If still no destination, ask user
                 # if not destination:
                 #     region = context.get("basic_info", {}).get("region", "global")
                 #     suggestions = await self._get_city_suggestions(region, "destination", 
@@ -276,15 +277,15 @@ Respond with either:
               
 
                 # Parse dates from user message if available
-                dep_date = dateparser.parse(original_message, settings={'PREFER_DATES_FROM': 'future'})
+                # dep_date = dateparser.parse(original_message, settings={'PREFER_DATES_FROM': 'future'})
                 ret_date = None
                 if "return" in context.get("basic_info", {}):
                     ret_date = dateparser.parse(context["basic_info"]["return"])
-
-                if not dep_date:
-                    # fallback: 30 days later
-                    dep_date = datetime.now() + timedelta(days=30)
-
+               
+                # if not dep_date:
+                #     # fallback: 30 days later
+                #     dep_date = datetime.now() + timedelta(days=30)
+                print(f"dddepppp: {dep_date}")
                 flights_data = await self.tools["flights"].search_flights(
                     origin,
                     destination,
