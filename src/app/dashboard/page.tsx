@@ -1,40 +1,44 @@
 "use client";
 
 import React, { useState, useEffect, useRef } from "react";
-import { useParams } from "next/navigation";
 import { motion } from "framer-motion";
 import { Bot } from "lucide-react";
 import ChatInterface from "@/components/dashboard/ChatInterface";
 import dynamic from "next/dynamic";
-
+import { useSession } from "next-auth/react";
 const MapComponent = dynamic(
   () => import("@/components/dashboard/MapComponent").then((mod) => mod.default),
   { ssr: false }
 );
 
 export default function TravelDashboard() {
-  const params = useParams();
-  const session_id = params?.session_id as string;
-
+  const [sessionId, setSessionId] = useState<string | null>(null);
+  const { data: session, status } = useSession();
   const [tripContext, setTripContext] = useState<any>(null);
   const [messages, setMessages] = useState<any[]>([]);
   const [isTyping, setIsTyping] = useState(false);
   const wsRef = useRef<WebSocket | null>(null);
 
-  // --- Load welcome message from initialize API ---
+  // --- Initialize trip when dashboard loads ---
   useEffect(() => {
-    if (!session_id || messages.length > 0) return;
+    if (sessionId) return; // already initialized
 
-    const storedData = localStorage.getItem(`trip_${session_id}`);
-    const basic_info = storedData ? JSON.parse(storedData).basic_info : {};
+    const storedData = localStorage.getItem("trip_basic_info");
+    if (!storedData) return;
 
-    fetch(`http://localhost:8000/trip/initialize`, {
+    const basic_info = JSON.parse(storedData);
+
+    fetch("http://localhost:8000/trip/initialize", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ user_id: session_id, basic_info }),
+      body: JSON.stringify({
+        user_id: session?.user?.id,
+         basic_info }),
     })
       .then((res) => res.json())
       .then((data) => {
+        setSessionId(data.session_id);
+
         const welcomeMsg = {
           id: "welcome",
           role: "assistant",
@@ -45,13 +49,13 @@ export default function TravelDashboard() {
         setMessages([welcomeMsg]);
       })
       .catch(console.error);
-  }, [session_id]);
+  }, [sessionId]);
 
-  // --- WebSocket setup for chat ---
+  // --- WebSocket setup ---
   useEffect(() => {
-    if (!session_id) return;
+    if (!sessionId) return;
 
-    const ws = new WebSocket(`ws://localhost:8000/chat/${session_id}`);
+    const ws = new WebSocket(`ws://localhost:8000/chat/${sessionId}`);
     wsRef.current = ws;
 
     ws.onmessage = (event) => {
@@ -63,21 +67,6 @@ export default function TravelDashboard() {
           return;
         }
 
-        if (data.type === "error") {
-          setMessages((prev) => [
-            ...prev,
-            {
-              id: Date.now().toString(),
-              role: "system",
-              content: data.message || "An error occurred",
-              timestamp: new Date(),
-            },
-          ]);
-          setIsTyping(false);
-          return;
-        }
-
-        // Normal AI message
         const aiMessage = {
           id: Date.now().toString(),
           role: "assistant",
@@ -98,10 +87,17 @@ export default function TravelDashboard() {
       setIsTyping(false);
     };
 
-    return () => {
-      ws.close();
-    };
-  }, [session_id]);
+    return () => ws.close();
+  }, [sessionId]);
+
+  // --- Trip context ---
+  useEffect(() => {
+    if (!sessionId) return;
+    fetch(`http://localhost:8000/trip/context/${sessionId}`)
+      .then((r) => r.json())
+      .then((ctx) => setTripContext(ctx))
+      .catch(console.error);
+  }, [sessionId]);
 
   const handleSendMessage = (content: string) => {
     const userMessage = {
@@ -114,15 +110,6 @@ export default function TravelDashboard() {
     wsRef.current?.send(JSON.stringify({ message: content }));
     setIsTyping(true);
   };
-
-  // --- Get trip context (city, basic info) ---
-  useEffect(() => {
-    if (!session_id) return;
-    fetch(`http://localhost:8000/trip/context/${session_id}`)
-      .then((r) => r.json())
-      .then((ctx) => setTripContext(ctx))
-      .catch((err) => console.error("Error fetching context:", err));
-  }, [session_id]);
 
   return (
     <div className="min-h-screen bg-gradient-to-br from-blue-50 via-white to-indigo-50">

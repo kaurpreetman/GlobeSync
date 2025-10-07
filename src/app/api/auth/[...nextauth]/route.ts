@@ -32,14 +32,32 @@ export const authOptions: NextAuthOptions = {
         if (!isValid) throw new Error("Invalid password");
 
         return {
-          id: user._id.toString(),
+          id: user._id.toString(), 
           email: user.email,
           name: user.fullName,
         };
       },
     }),
   ],
+
+  callbacks: {
+    async jwt({ token, user }) {
+    
+      if (user) {
+        token.id = user.id; 
+      }
+      return token;
+    },
+    async session({ session, token }) {
+     
+      if (session.user) {
+        session.user.id = token.id as string; 
+      }
+      return session;
+    },
+  },
 };
+
 
 
 

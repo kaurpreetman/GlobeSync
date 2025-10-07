@@ -9,37 +9,17 @@ export default function Explore() {
   const router = useRouter();
   const [city, setCity] = useState("");
   const [duration, setDuration] = useState("");
-  const [loading, setLoading] = useState(false);
-  const [error, setError] = useState("");
 
-  const handleSubmit = async (e: React.FormEvent) => {
+  const handleSubmit = (e: React.FormEvent) => {
     e.preventDefault();
-    setLoading(true);
-    setError("");
-    const user_id = `${city}-${Date.now()}`;
-    try {
-      const res = await fetch("http://localhost:8000/trip/initialize", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          user_id,
-          basic_info: { city, duration },
-        }),
-      });
-      if (!res.ok) throw new Error("Failed to initialize trip");
-      const data = await res.json();
-      localStorage.setItem(
-      `trip_${data.session_id}`,
-      JSON.stringify({ basic_info: { city, duration } })
-    );
 
+    const basic_info = { city, duration };
 
-      router.push(`/dashboard/${data.session_id}`);
-    } catch (err: any) {
-      setError(err.message || "Error initializing trip");
-    } finally {
-      setLoading(false);
-    }
+    // Store only basic_info
+    localStorage.setItem("trip_basic_info", JSON.stringify(basic_info));
+
+    // Redirect to dashboard (no session id in URL)
+    router.push("/dashboard");
   };
 
   return (
@@ -85,13 +65,8 @@ export default function Explore() {
             className="rounded-lg"
           />
         </div>
-        {error && <div className="text-red-600 text-sm">{error}</div>}
-        <Button
-          type="submit"
-          className="bg-indigo-600 text-white rounded-lg"
-          disabled={loading}
-        >
-          {loading ? "Setting up..." : "Start Planning"}
+        <Button type="submit" className="bg-indigo-600 text-white rounded-lg">
+          Start Planning
         </Button>
       </form>
     </div>
