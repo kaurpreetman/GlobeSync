@@ -298,7 +298,25 @@ Respond with either:
 
 
             elif "train" in tool_part:
-                destination = await self.extract_location_from_context(context, original_message)
+                basic_info = context.get("basic_info", {})
+                # Process tool call parameters first
+                origin = None
+                destination = None
+                dep_date = None
+                print(f"params:{params}")
+                # Check for direct parameters in tool call
+                if params:
+                    origin = params.get('departure_city') or params.get('origin')
+                    destination = params.get('arrival_city') or params.get('destination')
+                    dep_date = dateparser.parse(params.get('departure_date')) if params.get('departure_date')else None
+                    if not dep_date:
+                        dep_date=dateparser.parse(params.get('date')) if params.get('date') else None
+                    if origin:
+                        basic_info['origin'] = origin
+                    if destination:
+                        basic_info['destination'] = destination
+                    context['basic_info'] = basic_info
+                
                 if not destination:
                     suggestions = self._get_city_suggestions("india", "train")
                     return {
@@ -306,7 +324,7 @@ Respond with either:
                         "message": "Which city would you like to travel to by train?",
                         "suggested_responses": suggestions
                     }
-                trains_data = await self.tools["trains"].search_trains_between_cities("Delhi",destination,datetime.now()+timedelta(days=30))
+                trains_data = await self.tools["trains"].search_trains_between_cities(origin,destination,dep_date)
                 context["tool_data"]["trains"] = safe_json(trains_data)
                 return await self.interpret_tool_data(user_id,"trains",trains_data,original_message)
 
