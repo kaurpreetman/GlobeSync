@@ -1355,36 +1355,8 @@ class IRCTCTrainsTool:
                 }
                 
         except Exception as e:
-            # Fallback to basic mapping for common cities
-            basic_mapping = {
-                "delhi": {"main_station_code": "NDLS", "station_name": "New Delhi"},
-                "mumbai": {"main_station_code": "CSTM", "station_name": "Chhatrapati Shivaji Terminus"},
-                "bangalore": {"main_station_code": "SBC", "station_name": "Bangalore City"},
-                "chennai": {"main_station_code": "MAS", "station_name": "Chennai Central"},
-                "kolkata": {"main_station_code": "HWH", "station_name": "Howrah Junction"},
-                "hyderabad": {"main_station_code": "HYB", "station_name": "Hyderabad Deccan"},
-                "pune": {"main_station_code": "PUNE", "station_name": "Pune Junction"},
-                "jaipur": {"main_station_code": "JP", "station_name": "Jaipur Junction"}
-            }
-            
-            city_key = city_name.lower().strip()
-            if city_key in basic_mapping:
-                info = basic_mapping[city_key]
-                return {
-                    "main_station_code": info["main_station_code"],
-                    "station_name": info["station_name"],
-                    "alternative_codes": [],
-                    "city": city_name,
-                    "notes": f"Gemini lookup failed, using fallback mapping: {str(e)}"
-                }
-            
-            return {
-                "main_station_code": "NDLS",
-                "station_name": f"{city_name} Railway Station",
-                "alternative_codes": [],
-                "city": city_name,
-                "notes": f"Gemini lookup failed, using default: {str(e)}"
-            }
+            raise Exception(f"Error finding station code: {str(e)}")
+           
     
     async def _get_station_code(self, location: str) -> str:
         """Get railway station code for a location (backward compatibility)"""

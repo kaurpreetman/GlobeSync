@@ -15,7 +15,7 @@ MONGO_URI = "mongodb+srv://preetkaurpawar8_db_user:cgHndcuK5RlqTSSb@cluster0.nhv
 DB_NAME = "travel_planner"
 client = AsyncIOMotorClient(MONGO_URI)
 db = client[DB_NAME]
-
+    
 
 # ---------------- Workflow State ----------------
 class TravelPlanningState(TypedDict):
