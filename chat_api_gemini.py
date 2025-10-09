@@ -11,6 +11,40 @@ import dateparser
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 from tools import WeatherTool, AmadeusFlightsTool, IRCTCTrainsTool, EventsTool, AccommodationTool, MapsTool, TravelAssistantTool
+async def interpret_tool_data(self, user_id: str, tool_type: str, tool_data: Any, original_message: str) -> Dict[str, Any]:
+        context = self.get_user_context(user_id)
+        
+        # Special handling for events and accommodations to emphasize booking URLs
+        additional_instructions = ""
+        if tool_type == "events":
+            additional_instructions = """
+IMPORTANT: For each event, if a booking_url is provided, clearly mention that users can click the link to get more information or book tickets. 
+Format it like: "🔗 More info: [URL]" or "Click here for details: [URL]"
+Make the URLs clickable and visible in your response.
+"""
+        elif tool_type == "accommodation":
+            additional_instructions = """
+IMPORTANT: For each accommodation option:
+1. Include the ACTUAL hotel/accommodation name (not generic names)
+2. If a booking_url is provided, clearly display it for users to book
+Format it like: "🏨 [Hotel Name] - 🔗 Book here: [URL]"
+Make the URLs clickable and visible in your response.
+Prioritize showing real hotel names and booking links from the data.
+"""
+        
+        interpretation_prompt = f"""
+I retrieved {tool_type} data. Present this clearly and conversationally. 
+Do NOT make up info, only summarize what's there.
+{additional_instructions}
+
+User Request: "{original_message}"
+
+{tool_type.title()} Data:
+{json.dumps(safe_json(tool_data), indent=2)}
+
+User Context:
+{json.dumps(context.get('basic_info', {}), indent=2)}
+"""
 from config import settings
 
 # --- Utility for safe serialization ---
@@ -106,7 +140,7 @@ Rules:
 -
 
 Tools available:
-weather, flights, trains, events, maps, budget.
+weather, flights, trains, events, accommodation, maps, budget.
 
 User Context:
 {json.dumps(context.get('basic_info', {}), indent=2)}
@@ -379,7 +413,99 @@ Respond with either:
                     }
                 
                 context["tool_data"]["events"] = safe_json(events_data)
+                
+                # Try to auto-add events to user's calendar if connected
+                try:
+                    await self.auto_add_events_to_calendar(user_id, events_data)
+                except Exception as calendar_error:
+                    logger.warning(f"Could not auto-add events to calendar: {calendar_error}")
+                
                 return await self.interpret_tool_data(user_id,"events",events_data,original_message)
+
+            elif "accommodation" in tool_part or "hotel" in tool_part:
+                # Extract location from params or context
+                location = params.get('city') if params else None
+                if not location:
+                    location = await self.extract_location_from_context(context, original_message)
+                if not location:
+                    return {
+                        "type": "message",
+                        "message": "Which city should I look for accommodations in?",
+                        "suggested_responses": ["Paris", "London", "Tokyo", "New York", "Delhi", "Mumbai"]
+                    }
+                
+                # Parse check-in and check-out dates from params
+                check_in_date = None
+                check_out_date = None
+                
+                if params:
+                    if params.get('check_in_date'):
+                        check_in_date = dateparser.parse(params.get('check_in_date'), settings={'PREFER_DATES_FROM': 'future'})
+                    if params.get('check_out_date'):
+                        check_out_date = dateparser.parse(params.get('check_out_date'), settings={'PREFER_DATES_FROM': 'future'})
+                    if params.get('start_date'):
+                        check_in_date = dateparser.parse(params.get('start_date'), settings={'PREFER_DATES_FROM': 'future'})
+                    if params.get('end_date'):
+                        check_out_date = dateparser.parse(params.get('end_date'), settings={'PREFER_DATES_FROM': 'future'})
+                
+                # Fallback: try to parse from original message
+                if not check_in_date:
+                    check_in_date = dateparser.parse(original_message, settings={'PREFER_DATES_FROM': 'future'})
+                
+                # Default to near future if still no date
+                if not check_in_date:
+                    check_in_date = datetime.now() + timedelta(days=7)
+                
+                # Default check-out to 3 days after check-in
+                if not check_out_date:
+                    check_out_date = check_in_date + timedelta(days=3)
+                
+                # Get budget preference from params or use default
+                budget_str = params.get('budget', 'Mid') if params else 'Mid'
+                # Convert budget level to price per night
+                budget_map = {
+                    'Low': 50.0,
+                    'low': 50.0,
+                    'Mid': 100.0,
+                    'mid': 100.0,
+                    'Medium': 100.0,
+                    'medium': 100.0,
+                    'High': 200.0,
+                    'high': 200.0,
+                    'Luxury': 300.0,
+                    'luxury': 300.0
+                }
+                budget_per_night = budget_map.get(budget_str, 100.0)
+                
+                logger.info(f"Searching accommodations in {location} from {check_in_date} to {check_out_date}, budget: ${budget_per_night}/night")
+                
+                try:
+                    accommodation_data = await self.tools["accommodation"].find_accommodations(
+                        location,
+                        check_in_date,
+                        check_out_date,
+                        budget_per_night
+                    )
+                    
+                    logger.info(f"Accommodation data retrieved: {len(accommodation_data) if accommodation_data else 0} options")
+                    
+                    if not accommodation_data:
+                        return {
+                            "type": "message",
+                            "message": f"I couldn't find specific accommodation options in {location} for those dates. However, I recommend checking popular booking sites like Booking.com, Hotels.com, or Airbnb for the best deals.\n\nWould you like me to help with something else?",
+                            "suggested_responses": ["Find events", "Weather forecast", "Find flights", "Explore attractions"]
+                        }
+                    
+                    context["tool_data"]["accommodation"] = safe_json(accommodation_data)
+                    return await self.interpret_tool_data(user_id, "accommodation", accommodation_data, original_message)
+                    
+                except Exception as e:
+                    logger.error(f"Error searching accommodations: {e}", exc_info=True)
+                    return {
+                        "type": "message",
+                        "message": f"I encountered an issue searching for accommodations. Please try popular booking sites like Booking.com or Hotels.com for {location}.",
+                        "suggested_responses": ["Find events", "Weather forecast", "Find flights"]
+                    }
 
             else:
                 try:
@@ -482,6 +608,62 @@ User Context:
 
         return None
 
+
+    async def auto_add_events_to_calendar(self, user_id: str, events_data: list):
+        """Automatically add found events to user's Google Calendar if connected"""
+        try:
+            import httpx
+            
+            # Check if user has calendar connected
+            async with httpx.AsyncClient() as client:
+                status_response = await client.get(
+                    f"http://localhost:8000/api/calendar/status",
+                    params={"user_id": user_id},
+                    timeout=5.0
+                )
+                
+                if status_response.status_code != 200:
+                    logger.debug(f"Calendar status check failed for user {user_id}")
+                    return
+                
+                status_data = status_response.json()
+                if not status_data.get("connected"):
+                    logger.debug(f"User {user_id} does not have calendar connected")
+                    return
+                
+                # User has calendar connected, add events
+                # Convert events to the format expected by calendar API
+                calendar_events = []
+                for event in events_data:
+                    # Handle both Event objects and dicts
+                    if hasattr(event, 'dict'):
+                        event = event.dict()
+                    
+                    calendar_events.append({
+                        "name": event.get("name"),
+                        "location": event.get("location", {}).get("address", "") if isinstance(event.get("location"), dict) else str(event.get("location", "")),
+                        "description": event.get("description", ""),
+                        "start_time": event.get("start_time"),
+                        "end_time": event.get("end_time")
+                    })
+                
+                # Add events in batch
+                add_response = await client.post(
+                    f"http://localhost:8000/api/calendar/add-events-batch",
+                    params={"user_id": user_id},
+                    json=calendar_events,
+                    timeout=10.0
+                )
+                
+                if add_response.status_code == 200:
+                    result = add_response.json()
+                    logger.info(f"Added {result.get('events_added', 0)} events to calendar for user {user_id}")
+                else:
+                    logger.warning(f"Failed to add events to calendar: {add_response.status_code}")
+                    
+        except Exception as e:
+            logger.warning(f"Error auto-adding events to calendar: {e}")
+            # Don't raise the error - calendar integration is optional
 
     def generate_suggestions(self, response: str, context: Dict) -> List[str]:
         suggestions = ["That sounds good","Tell me more","What are my options?","Can you help with something else?"]

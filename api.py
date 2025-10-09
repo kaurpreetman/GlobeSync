@@ -10,6 +10,7 @@ import asyncio
 from models import TripRequest, TripSummary, UserPreferences
 from orchestrator import orchestrator
 from config import settings
+from calendar_api import router as calendar_router
 
 # Initialize FastAPI app
 app = FastAPI(
@@ -27,6 +28,9 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+# Include calendar router
+app.include_router(calendar_router)
 
 # In-memory storage for demo purposes (use proper database in production)
 trip_store: Dict[str, Dict[str, Any]] = {}
