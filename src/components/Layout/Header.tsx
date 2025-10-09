@@ -3,7 +3,7 @@
 import { useSession, signOut } from "next-auth/react";
 import { usePathname, useRouter } from "next/navigation";
 import { Button } from "@/components/ui/button";
-import { User } from "lucide-react";
+import { User, LogOut } from "lucide-react";
 import { cn } from "@/lib/utils";
 
 const Header = () => {
@@ -26,12 +26,12 @@ const Header = () => {
     }
   };
 
-  const handleUserClick = () => {
-    if (session) {
-      if (confirm("Logout?")) signOut({ callbackUrl: "/" });
-    } else {
-      router.push("/auth");
-    }
+  const handleSignOut = async () => {
+    await signOut({ callbackUrl: "/auth" });
+  };
+
+  const handleSignIn = () => {
+    router.push(`/auth?callbackUrl=${pathname}`);
   };
 
   return (
@@ -63,10 +63,18 @@ const Header = () => {
         </nav>
 
         <div className="flex items-center space-x-4">
-          {session && <span className="text-sm font-medium mr-2">{session.user?.name}</span>}
-          <Button variant="ghost" size="icon" onClick={handleUserClick}>
-            <User className="h-4 w-4" />
-          </Button>
+          {session ? (
+            <>
+              <span className="text-sm font-medium">{session.user?.name}</span>
+              <Button variant="ghost" size="icon" onClick={handleSignOut}>
+                <LogOut className="h-4 w-4" />
+              </Button>
+            </>
+          ) : (
+            <Button variant="travel" onClick={handleSignIn}>
+              Sign In
+            </Button>
+          )}
         </div>
       </div>
     </header>

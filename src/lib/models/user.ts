@@ -1,45 +1,22 @@
-// lib/models/user.ts
-import clientPromise from "@/lib/mongodb";
-import { ObjectId } from "mongodb";
-import bcrypt from "bcrypt";
+import mongoose, { Schema, model, models, Document, Model } from "mongoose";
 
-export interface IUser {
-  _id?: ObjectId;
-  fullName: string;
+export interface IUser extends Document {
+  name: string;
   email: string;
-  password: string; 
-  createdAt?: Date;
+  password?: string;
+  isVerified: boolean;
+  otp?: string;
+  otpExpiry?: Date;
 }
 
-const COLLECTION = "users";
+const userSchema = new Schema<IUser>({
+  name: { type: String, required: true },
+  email: { type: String, required: true, unique: true },
+  password: { type: String },
+  isVerified: { type: Boolean, default: false },
+  otp: { type: String },
+  otpExpiry: { type: Date },
+});
 
-export async function findUserByEmail(email: string) {
-  const client = await clientPromise;
-  const users = client.db().collection<IUser>(COLLECTION);
-  return users.findOne({ email: email.toLowerCase() });
-}
-
-export async function createUser(data: { fullName: string; email: string; password: string }) {
-  const client = await clientPromise;
-  const users = client.db().collection(COLLECTION);
-
-  const now = new Date();
-  const userDoc: IUser = {
-    fullName: data.fullName,
-    email: data.email.toLowerCase(),
-    password: data.password, 
-    createdAt: now,
-  };
-
-  const result = await users.insertOne(userDoc);
-  return { ...userDoc, _id: result.insertedId };
-}
-
-export async function verifyPassword(plain: string, hashed: string) {
-  return bcrypt.compare(plain, hashed);
-}
-
-export async function hashPassword(plain: string) {
-  const saltRounds = 10;
-  return bcrypt.hash(plain, saltRounds);
-}
+const User: Model<IUser> = models.User || model<IUser>("User", userSchema);
+export default User;

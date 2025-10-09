@@ -80,9 +80,7 @@ export default function Home() {
                 <ArrowRight className="ml-2 h-4 w-4" />
               </Link>
             </Button>
-            <Button asChild variant="travel-outline" size="lg">
-              <Link href="/dashboard">View Demo</Link>
-            </Button>
+            
           </div>
         </div>
       </section>
