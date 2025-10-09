@@ -329,10 +329,55 @@ Respond with either:
                 return await self.interpret_tool_data(user_id,"trains",trains_data,original_message)
 
             elif "event" in tool_part:
-                location = await self.extract_location_from_context(context, original_message)
+                # Extract location from params or context
+                location = params.get('city') if params else None
+                if not location:
+                    location = await self.extract_location_from_context(context, original_message)
                 if not location:
                     return {"type":"message","message":"Which city should I look for events in?","suggested_responses":["Paris","London","Tokyo","New York"]}
-                events_data = await self.tools["events"].find_events(location,datetime.now(),datetime.now()+timedelta(days=30),["entertainment","cultural","sightseeing"])
+                
+                # Parse start and end dates from params
+                start_date = None
+                end_date = None
+                
+                if params:
+                    # Try to parse start_date
+                    if params.get('start_date'):
+                        start_date = dateparser.parse(params.get('start_date'), settings={'PREFER_DATES_FROM': 'future'})
+                    # Try to parse end_date
+                    if params.get('end_date'):
+                        end_date = dateparser.parse(params.get('end_date'), settings={'PREFER_DATES_FROM': 'future'})
+                
+                # Fallback: try to parse from original message
+                if not start_date:
+                    start_date = dateparser.parse(original_message, settings={'PREFER_DATES_FROM': 'future'})
+                
+                # Default to current date if still no date
+                if not start_date:
+                    start_date = datetime.now()
+                
+                # If no end date, default to 30 days from start
+                if not end_date:
+                    end_date = start_date + timedelta(days=30)
+                
+                logger.info(f"Searching events in {location} from {start_date} to {end_date}")
+                
+                events_data = await self.tools["events"].find_events(
+                    location,
+                    start_date,
+                    end_date,
+                    ["entertainment","cultural","sightseeing"]
+                )
+                
+                logger.info(f"Events data retrieved: {len(events_data) if events_data else 0} events")
+                
+                if not events_data:
+                    return {
+                        "type": "message",
+                        "message": f"I couldn't find any events in {location} for the specified dates. This might be because:\n- The dates are too far in the future\n- No major events are scheduled\n- The search didn't return specific event information\n\nWould you like me to search for something else?",
+                        "suggested_responses": ["Find attractions", "Search restaurants", "Weather forecast", "Find hotels"]
+                    }
+                
                 context["tool_data"]["events"] = safe_json(events_data)
                 return await self.interpret_tool_data(user_id,"events",events_data,original_message)
 

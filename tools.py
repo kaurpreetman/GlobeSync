@@ -3,7 +3,7 @@ import httpx
 import json
 import re, logging
 from datetime import datetime, timedelta
-from duckduckgo_search import DDGS
+from ddgs import DDGS
 from langchain_google_genai import ChatGoogleGenerativeAI
 
 # Configure logging
@@ -581,7 +581,6 @@ class EventsTool:
                                 categories: List[str] = None) -> List[Dict[str, Any]]:
         """Search for events using DuckDuckGo"""
         try:
-            from duckduckgo_search import DDGS
             import re
             
             # Create search queries for different types of events
@@ -768,18 +767,26 @@ class EventsTool:
             if not settings.GEMINI_API_KEY:
                 raise Exception("Gemini API key is required. Please set GEMINI_API_KEY in your environment.")
             
+            logger.info(f"Finding events in {location} from {start_date} to {end_date}")
+            
             # Search the web for events
             search_results = await self._search_events_web(location, start_date, end_date, categories)
             
+            logger.info(f"Found {len(search_results)} search results")
+            
             if not search_results:
+                logger.warning("No search results found for events")
                 return []  # No search results found
             
             # Extract structured event data using Gemini
             events = await self._extract_events_with_gemini(search_results, location, start_date, end_date, categories)
             
+            logger.info(f"Extracted {len(events)} events from search results")
+            
             return events
                 
         except Exception as e:
+            logger.error(f"Events search error: {str(e)}", exc_info=True)
             raise Exception(f"Events search error: {str(e)}")
 
 class BudgetTool:
