@@ -3,9 +3,11 @@
 import { Button } from "@/components/ui/button";
 import { ArrowRight } from "lucide-react";
 import Link from "next/link";
-import { useRouter } from "next/navigation";
+import { useRouter, useSearchParams } from "next/navigation";
 import DestinationCard from "@/components/Cards/DestinationCard";
 import FeatureCard from "@/components/Cards/FeatureCard";
+import { useEffect, useState } from "react";
+import { useToast } from "@/hooks/use-toast";
 
 import parisImage from "@/assets/paris.jpg";
 import tokyoImage from "@/assets/tokyo.jpg";
@@ -17,6 +19,103 @@ import heroImage from "@/assets/hero-travel.jpg";
 
 export default function Home() {
   const router = useRouter();
+  const searchParams = useSearchParams();
+  const { toast } = useToast();
+  const [calendarConnected, setCalendarConnected] = useState(false);
+  const [isConnecting, setIsConnecting] = useState(false);
+
+  useEffect(() => {
+    // Check if calendar connection succeeded
+    if (searchParams.get('calendar_connected') === 'true') {
+      toast({
+        title: "Calendar Connected!",
+        description: "Your Google Calendar has been connected successfully. Events will be automatically added to your calendar.",
+      });
+      // Remove the query parameter
+      window.history.replaceState({}, '', '/');
+    }
+
+    // Check if there was an error
+    const error = searchParams.get('calendar_error');
+    if (error) {
+      toast({
+        title: "Connection Failed",
+        description: `Could not connect calendar: ${error}`,
+        variant: "destructive",
+      });
+      window.history.replaceState({}, '', '/');
+    }
+
+    // Check calendar status on load
+    checkCalendarStatus();
+  }, [searchParams, toast]);
+
+  const checkCalendarStatus = async () => {
+    try {
+      const userId = localStorage.getItem('user_id') || 'default_user';
+      const response = await fetch(`/api/calendar?action=status&userId=${userId}`);
+      const data = await response.json();
+      
+      if (data.success && data.connected) {
+        setCalendarConnected(true);
+      }
+    } catch (error) {
+      console.error('Error checking calendar status:', error);
+    }
+  };
+
+  const handleConnectCalendar = async () => {
+    try {
+      setIsConnecting(true);
+      const userId = localStorage.getItem('user_id') || 'default_user';
+      
+      // Store user_id if not already stored
+      if (!localStorage.getItem('user_id')) {
+        localStorage.setItem('user_id', userId);
+      }
+
+      const response = await fetch(`/api/calendar?action=connect&userId=${userId}`);
+      const data = await response.json();
+
+      if (data.success && data.authorizationUrl) {
+        // Redirect to Google OAuth
+        window.location.href = data.authorizationUrl;
+      } else {
+        throw new Error('Failed to get authorization URL');
+      }
+    } catch (error) {
+      console.error('Error connecting calendar:', error);
+      toast({
+        title: "Connection Error",
+        description: "Could not initiate calendar connection. Please try again.",
+        variant: "destructive",
+      });
+      setIsConnecting(false);
+    }
+  };
+
+  const handleDisconnectCalendar = async () => {
+    try {
+      const userId = localStorage.getItem('user_id') || 'default_user';
+      const response = await fetch(`/api/calendar?action=disconnect&userId=${userId}`);
+      const data = await response.json();
+
+      if (data.success) {
+        setCalendarConnected(false);
+        toast({
+          title: "Calendar Disconnected",
+          description: "Your Google Calendar has been disconnected.",
+        });
+      }
+    } catch (error) {
+      console.error('Error disconnecting calendar:', error);
+      toast({
+        title: "Error",
+        description: "Could not disconnect calendar. Please try again.",
+        variant: "destructive",
+      });
+    }
+  };
 
   const destinations = [
     { name: "Paris", image: parisImage },
@@ -138,20 +237,35 @@ export default function Home() {
       <section className="py-20 px-4 bg-gradient-to-r from-travel-blue to-travel-blue-light">
         <div className="container mx-auto text-center">
           <h2 className="text-4xl font-bold text-white mb-4">
-            Connect your calendar to receive AI-powered travel reminders and
-            updates.
+            {calendarConnected 
+              ? "Your calendar is connected!" 
+              : "Connect your calendar to receive AI-powered travel reminders and updates."}
           </h2>
           <p className="text-xl text-white/90 mb-8">
-            Never miss a beat. Connect your calendar to automatically sync your
-            travel plans.
+            {calendarConnected
+              ? "Events will be automatically added to your Google Calendar when found."
+              : "Never miss a beat. Connect your calendar to automatically sync your travel plans."}
           </p>
-          <Button
-            variant="travel-outline"
-            size="lg"
-            className="bg-white text-travel-blue hover:bg-white/90"
-          >
-            Connect Calendar
-          </Button>
+          {calendarConnected ? (
+            <Button
+              onClick={handleDisconnectCalendar}
+              variant="travel-outline"
+              size="lg"
+              className="bg-white text-travel-blue hover:bg-white/90"
+            >
+              Disconnect Calendar
+            </Button>
+          ) : (
+            <Button
+              onClick={handleConnectCalendar}
+              disabled={isConnecting}
+              variant="travel-outline"
+              size="lg"
+              className="bg-white text-travel-blue hover:bg-white/90"
+            >
+              {isConnecting ? "Connecting..." : "Connect Calendar"}
+            </Button>
+          )}
         </div>
       </section>
     </div>
