@@ -437,48 +437,47 @@ class MapsTool:
             # Get location details
             origin_location = await self._geocode_location(origin)
             destination_location = await self._geocode_location(destination)
-            
-            # Get route data
+
+            # Get route data from OSRM
             route_data = await self._get_route_osrm(
                 (origin_location.lat, origin_location.lng),
                 (destination_location.lat, destination_location.lng),
                 transport_mode
             )
-            
+
             routes = route_data.get("routes", [])
             route_options = []
-            
+
             for i, route in enumerate(routes):
                 route_options.append({
                     "route_name": f"Route {i + 1}",
-                    "distance": route["distance"] / 1000,  # Convert to km
+                    "distance": route["distance"] / 1000,  # km
                     "duration": self._format_duration(route["duration"]),
                     "distance_text": f"{route['distance'] / 1000:.1f} km",
-                    "duration_value": route["duration"],  # in seconds
+                    "duration_value": route["duration"],
                     "steps": len(route.get("legs", [{}])[0].get("steps", []))
                 })
-            
-            # Use the first route for main details
-            main_route = routes[0] if routes else {"distance": 0, "duration": 0}
-            
+
+            # Use first route for main details
+            main_route = routes[0] if routes else {"distance": 0, "duration": 0, "geometry": {"coordinates": []}}
+
+            # ✅ Include the full polyline (geojson coordinates)
+            route_geometry = main_route.get("geometry", {}).get("coordinates", [])
+
             return RouteDetails(
                 origin=origin_location,
                 destination=destination_location,
                 route_options=route_options,
                 distance=main_route["distance"] / 1000,  # Convert to km
                 travel_time=self._format_duration(main_route["duration"]),
-                transportation_mode=transport_mode
+                transportation_mode=transport_mode,
+                route_geometry=route_geometry  # 🟢 ADD THIS
             )
-            
-        except ValueError as e:
-            logger.error(f"Invalid location provided for route calculation: {e}")
-            raise ValueError(f"Invalid location: {str(e)}")
-        except httpx.HTTPError as e:
-            logger.error(f"HTTP error during route calculation: {e}")
-            raise RuntimeError(f"Failed to fetch route data: {str(e)}")
+
         except Exception as e:
-            logger.error(f"Unexpected error during route calculation: {e}", exc_info=True)
+            logger.error(f"Error in get_route: {e}", exc_info=True)
             raise RuntimeError(f"Maps routing error: {str(e)}")
+
     
     def _format_duration(self, duration_seconds: float) -> str:
         """Format duration from seconds to human readable format"""
@@ -1341,22 +1340,21 @@ class IRCTCTrainsTool:
                 json_match = re.search(r'\{.*\}', response.content, re.DOTALL)
                 if json_match:
                     station_info = json.loads(json_match.group())
+                    
+                    # Validate that we got a proper station code
+                    if not station_info.get("main_station_code") or station_info.get("main_station_code") == "XXX":
+                        raise ValueError(f"Gemini could not resolve station code for {city_name}")
+                    
                     return station_info
                 else:
-                    raise ValueError("No JSON found in response")
-            except (json.JSONDecodeError, ValueError):
-                # Fallback parsing
-                return {
-                    "main_station_code": "NDLS",
-                    "station_name": f"{city_name} Railway Station",
-                    "alternative_codes": [],
-                    "city": city_name,
-                    "notes": "Could not parse Gemini response, using default"
-                }
+                    raise ValueError(f"No valid JSON response from Gemini for city: {city_name}")
+                    
+            except (json.JSONDecodeError, ValueError) as parse_error:
+                raise ValueError(f"Failed to parse Gemini response for {city_name}: {str(parse_error)}")
                 
         except Exception as e:
-            raise Exception(f"Error finding station code: {str(e)}")
-           
+            raise Exception(f"Gemini AI failed to find station code for '{city_name}': {str(e)}")
+
     
     async def _get_station_code(self, location: str) -> str:
         """Get railway station code for a location (backward compatibility)"""
@@ -1364,7 +1362,7 @@ class IRCTCTrainsTool:
         return info["main_station_code"]
     
     async def _search_train_prices_web(self, origin: str, destination: str, date: str) -> Dict[str, Any]:
-        """Search for train prices using DuckDuckGo web search"""
+        """Search for train prices using DuckDuckGo web search with enhanced error handling"""
         try:
             # DDGS doesn't support async context manager, use synchronous approach
             def search_train_sync(query):
@@ -1372,63 +1370,127 @@ class IRCTCTrainsTool:
                     with DDGS() as ddgs:
                         return list(ddgs.text(query, max_results=5))
                 except Exception as e:
-                    print(f"Train search error: {e}")
+                    logger.warning(f"DuckDuckGo search error: {e}")
                     return []
             
-            # Search for train prices and booking information
-            search_query = f"train booking {origin} to {destination} price fare IRCTC {date}"
+            # Multiple search queries for better coverage
+            search_queries = [
+                f"train booking {origin} to {destination} price fare IRCTC {date}",
+                f"IRCTC {origin} {destination} train ticket booking {date}",
+                f"railway reservation {origin} to {destination} fare {date}"
+            ]
             
-            # Run synchronous search in executor
-            import asyncio
-            search_results = await asyncio.get_event_loop().run_in_executor(None, search_train_sync, search_query)
+            all_results = []
             
-            results = []
-            for result in search_results:
-                results.append({
-                    "title": result.get("title", ""),
-                    "url": result.get("href", ""),
-                    "snippet": result.get("body", "")
-                })
+            # Try multiple search queries
+            for query in search_queries[:2]:  # Limit to 2 queries to avoid rate limits
+                try:
+                    import asyncio
+                    search_results = await asyncio.get_event_loop().run_in_executor(None, search_train_sync, query)
+                    
+                    for result in search_results:
+                        all_results.append({
+                            "title": result.get("title", ""),
+                            "url": result.get("href", ""),
+                            "snippet": result.get("body", ""),
+                            "query": query
+                        })
+                        
+                except Exception as search_error:
+                    logger.warning(f"Search query failed: {search_error}")
+                    continue
             
-            # Use Gemini to analyze the search results
-            llm = ChatGoogleGenerativeAI(
-                model=settings.GEMINI_MODEL,
-                google_api_key=settings.GEMINI_API_KEY,
-                temperature=0.3
-            )
+            # Use Gemini to analyze the search results if available
+            analysis_text = "No web search results available due to rate limiting or network issues."
             
-            analysis_prompt = f"""
-            Analyze these web search results for train travel from {origin} to {destination} on {date}.
-            Extract useful information about:
-            1. Typical price ranges for different classes (SL, 3A, 2A, 1A)
-            2. Popular trains on this route
-            3. Booking tips and recommendations
-            4. Travel time estimates
-            
-            Search Results:
-            {json.dumps(results, indent=2)}
-            
-            Provide a concise summary with practical information for travelers.
-            """
-            
-            messages = [HumanMessage(content=analysis_prompt)]
-            analysis = await llm.ainvoke(messages)
+            if all_results and settings.GEMINI_API_KEY:
+                try:
+                    llm = ChatGoogleGenerativeAI(
+                        model=settings.GEMINI_MODEL,
+                        google_api_key=settings.GEMINI_API_KEY,
+                        temperature=0.3
+                    )
+                    
+                    analysis_prompt = f"""
+                    Analyze these web search results for train travel from {origin} to {destination} on {date}.
+                    Extract useful information about:
+                    1. Typical price ranges for different classes (SL, 3A, 2A, 1A)
+                    2. Popular trains on this route
+                    3. Booking tips and recommendations
+                    4. Travel time estimates
+                    5. Alternative booking platforms
+                    
+                    Search Results:
+                    {json.dumps(all_results[:10], indent=2)}
+                    
+                    Provide a concise summary with practical information for travelers.
+                    If search results are limited, provide general train travel advice for India.
+                    """
+                    
+                    messages = [HumanMessage(content=analysis_prompt)]
+                    analysis = await llm.ainvoke(messages)
+                    analysis_text = analysis.content
+                    
+                except Exception as gemini_error:
+                    logger.warning(f"Gemini analysis failed: {gemini_error}")
+                    analysis_text = f"""
+                    Train booking information for {origin} to {destination}:
+                    
+                    General Guidelines:
+                    - Book through official IRCTC website or mobile app
+                    - Sleeper Class (SL): Most economical option
+                    - 3rd AC (3A): Good balance of comfort and price  
+                    - 2nd AC (2A): More comfortable with better amenities
+                    - 1st AC (1A): Premium experience with individual cabins
+                    
+                    Booking Tips:
+                    - Book 60-120 days in advance for better availability
+                    - Check Tatkal quota for last-minute bookings
+                    - Consider alternative dates for better fare options
+                    - Use IRCTC Connect app for mobile bookings
+                    
+                    Note: Live pricing and availability may vary. Please check IRCTC directly for accurate information.
+                    """
             
             return {
-                "search_results": results,
-                "price_analysis": analysis.content,
-                "search_query": search_query,
+                "search_results": all_results,
+                "price_analysis": analysis_text,
+                "search_queries": search_queries[:2],
                 "route": f"{origin} → {destination}",
-                "date": date
+                "date": date,
+                "total_results": len(all_results),
+                "data_source": "web_search"
             }
                 
         except Exception as e:
+            logger.error(f"Web search fallback error: {str(e)}")
             return {
                 "search_results": [],
-                "price_analysis": f"Unable to fetch web pricing data: {str(e)}",
-                "search_query": search_query if 'search_query' in locals() else "",
+                "price_analysis": f"""
+                Unable to fetch current web pricing data due to: {str(e)}
+                
+                General train booking guidance for {origin} to {destination}:
+                
+                1. Use official IRCTC website (irctc.co.in) or mobile app
+                2. Book tickets 60-120 days in advance for better availability
+                3. Check multiple train options and timings
+                4. Consider Tatkal quota for urgent bookings (opens 1 day prior)
+                5. Keep alternative travel dates for better fare options
+                
+                Common fare ranges (approximate):
+                - Sleeper Class: ₹200-800 depending on distance
+                - 3rd AC: ₹500-1500 depending on distance  
+                - 2nd AC: ₹800-2500 depending on distance
+                - 1st AC: ₹1500-4000 depending on distance
+                
+                Please visit IRCTC directly for current pricing and availability.
+                """,
+                "search_queries": [],
                 "route": f"{origin} → {destination}",
-                "date": date
+                "date": date,
+                "total_results": 0,
+                "data_source": "fallback_guidance",
+                "error": str(e)
             }
 
         # Extract city name and convert to lowercase
@@ -1441,10 +1503,11 @@ class IRCTCTrainsTool:
         return station_mapping.get(city, city.upper()[:4])
     
     async def get_live_trains(self, from_station_code: str, to_station_code: str = None, hours: int = 1) -> Dict[str, Any]:
-        """Get live train information using IRCTC API"""
+        """Get live train information using IRCTC API with rate limiting and fallback handling"""
         try:
             if not self.api_key:
-                raise Exception("RapidAPI key is required. Please set RAPIDAPI_KEY in your environment.")
+                logger.warning("RAPIDAPI key not configured, using fallback train search")
+                return await self._get_train_fallback_data(from_station_code, to_station_code)
             
             import http.client
             import json
@@ -1468,59 +1531,180 @@ class IRCTCTrainsTool:
             res = conn.getresponse()
             data = res.read()
             
-            if res.status != 200:
-                raise Exception(f"IRCTC API error: HTTP {res.status}")
+            # Handle different HTTP status codes
+            if res.status == 429:
+                logger.warning(f"IRCTC API rate limit exceeded (429). Using fallback train search.")
+                conn.close()
+                return await self._get_train_fallback_data(from_station_code, to_station_code)
+            elif res.status == 401:
+                logger.error("IRCTC API authentication failed (401). Check RAPIDAPI_KEY.")
+                conn.close()
+                return await self._get_train_fallback_data(from_station_code, to_station_code)
+            elif res.status != 200:
+                logger.warning(f"IRCTC API error: HTTP {res.status}. Using fallback train search.")
+                conn.close()
+                return await self._get_train_fallback_data(from_station_code, to_station_code)
             
             response_data = json.loads(data.decode("utf-8"))
             conn.close()
             
+            logger.info(f"Successfully fetched train data from IRCTC API for {from_station_code} → {to_station_code}")
             return response_data
             
         except Exception as e:
-            raise Exception(f"Train search error: {str(e)}")
+            logger.error(f"IRCTC API error: {str(e)}. Using fallback train search.")
+            return await self._get_train_fallback_data(from_station_code, to_station_code)
+    
+    async def _get_train_fallback_data(self, from_station_code: str, to_station_code: str) -> Dict[str, Any]:
+        """Return API unavailable error when IRCTC API fails"""
+        logger.error(f"IRCTC API unavailable for {from_station_code} → {to_station_code}")
+        return {
+            "status": False,
+            "data": [],
+            "message": "IRCTC API is currently unavailable. Please try again later or use the official IRCTC website/app.",
+            "error": "api_unavailable",
+            "fallback": True,
+            "suggestions": [
+                "Try again in a few minutes",
+                "Use official IRCTC website: irctc.co.in",
+                "Use IRCTC Connect mobile app",
+                "Check train schedules on railway inquiry websites"
+            ]
+        }
     
     async def search_trains_between_cities(self, origin: str, destination: str, travel_date: datetime = None) -> List[Dict[str, Any]]:
-        """Search for trains between two cities"""
+        """Search for trains between two cities with enhanced error handling and fallbacks"""
         try:
             from models import TrainDetails, TrainSearchResult
             
-            # Get station codes
-            from_code = await self._get_station_code(origin)
-            to_code = await self._get_station_code(destination)
+            # Debug logging to check input parameters
+            logger.info(f"Train search called with: origin='{origin}', destination='{destination}', travel_date={travel_date}")
             
-            # Get live train data
+            # Get station codes using Gemini AI only - no hardcoded fallbacks
+            try:
+                logger.info(f"Resolving station code for origin: '{origin}'")
+                from_station_info = await self._get_station_code_with_gemini(origin)
+                logger.info(f"Origin station info: {from_station_info}")
+                
+                logger.info(f"Resolving station code for destination: '{destination}'")
+                to_station_info = await self._get_station_code_with_gemini(destination)
+                logger.info(f"Destination station info: {to_station_info}")
+                
+                from_code = from_station_info.get("main_station_code")
+                to_code = to_station_info.get("main_station_code")
+                
+                logger.info(f"Extracted codes: from_code='{from_code}', to_code='{to_code}'")
+                
+                # Validate that Gemini provided actual station codes
+                if not from_code or not to_code or from_code == "XXX" or to_code == "XXX":
+                    raise ValueError(f"Unable to resolve station codes for {origin} or {destination}")
+                
+                logger.info(f"Resolved station codes: {origin} → {from_code}, {destination} → {to_code}")
+                
+            except Exception as station_error:
+                logger.error(f"Station code resolution failed: {station_error}")
+                # Return error instead of using fallback codes
+                return [{
+                    "train_number": "STATION_ERROR",
+                    "train_name": "Station Code Resolution Failed",
+                    "from_station": origin,
+                    "to_station": destination,
+                    "message": f"Unable to resolve railway station codes for {origin} and/or {destination}",
+                    "error": str(station_error),
+                    "suggestions": [
+                        "Check if city names are spelled correctly",
+                        "Try using full city names (e.g., 'New Delhi' instead of 'Delhi')",
+                        "Ensure the cities have railway stations",
+                        "Try alternative city names or nearby cities"
+                    ],
+                    "data_source": "station_resolution_error",
+                    "route": f"{origin} → {destination}"
+                }]
+            
+            # Get live train data with built-in fallback handling
             train_data = await self.get_live_trains(from_code, to_code, hours=24)
             
             trains = []
+            data_source = "irctc_api"
             
-            # Process the API response
+            # Check if this is fallback data
+            if train_data.get("fallback"):
+                data_source = "fallback_data"
+                logger.info("Using fallback train data due to API issues")
+            
+            # Process the API/fallback response
             if train_data.get("status") and train_data.get("data"):
                 train_list = train_data["data"]
                 
                 for train_info in train_list:
                     try:
-                        train = TrainDetails(
-                            train_number=train_info.get("trainNumber", "N/A"),
-                            train_name=train_info.get("trainName", "N/A"),
-                            from_station=train_info.get("fromStation", origin),
-                            to_station=train_info.get("toStation", destination),
-                            departure_time=train_info.get("departureTime", "N/A"),
-                            arrival_time=train_info.get("arrivalTime", "N/A"),
-                            duration=train_info.get("duration", "N/A"),
-                            classes_available=train_info.get("classes", []),
-                            availability_status=train_info.get("availability", "Available"),
-                            distance=train_info.get("distance", "N/A")
-                        )
-                        trains.append(train.dict())
+                        # Create standardized train object
+                        train_details = {
+                            "train_number": train_info.get("trainNumber", "N/A"),
+                            "train_name": train_info.get("trainName", "N/A"),
+                            "from_station": train_info.get("fromStation", origin),
+                            "to_station": train_info.get("toStation", destination),
+                            "from_station_code": from_code,
+                            "to_station_code": to_code,
+                            "departure_time": train_info.get("departureTime", "N/A"),
+                            "arrival_time": train_info.get("arrivalTime", "N/A"),
+                            "duration": train_info.get("duration", "N/A"),
+                            "classes_available": train_info.get("classes", ["SL", "3A", "2A"]),
+                            "availability_status": train_info.get("availability", "Available"),
+                            "distance": train_info.get("distance", "N/A"),
+                            "data_source": data_source,
+                            "route": f"{origin} → {destination}",
+                            "travel_date": travel_date.strftime("%Y-%m-%d") if travel_date else "Not specified"
+                        }
                         
-                    except Exception as e:
-                        print(f"Error processing train data: {e}")
+                        trains.append(train_details)
+                        
+                    except Exception as train_error:
+                        logger.warning(f"Error processing train data: {train_error}")
                         continue
             
+            # If no trains found, add web search suggestion
+            if not trains:
+                logger.warning(f"No trains found for {origin} → {destination}")
+                # Add a helpful suggestion instead of empty results
+                trains.append({
+                    "train_number": "SEARCH_REQUIRED",
+                    "train_name": "No Direct Trains Found",
+                    "from_station": origin,
+                    "to_station": destination,
+                    "message": f"No direct trains found between {origin} and {destination}. Consider checking alternative routes or nearby stations.",
+                    "suggestions": [
+                        "Check for connecting trains via major railway junctions",
+                        "Try searching for trains from nearby cities",
+                        "Consider alternative transport modes (flights, buses)",
+                        "Visit IRCTC website directly for latest information"
+                    ],
+                    "data_source": "system_suggestion",
+                    "route": f"{origin} → {destination}"
+                })
+            
+            logger.info(f"Found {len(trains)} train options for {origin} → {destination}")
             return trains
             
         except Exception as e:
-            raise Exception(f"Train search between cities error: {str(e)}")
+            logger.error(f"Train search error: {str(e)}")
+            # Return helpful error information instead of raising exception
+            return [{
+                "train_number": "ERROR",
+                "train_name": "Search Error",
+                "from_station": origin,
+                "to_station": destination,
+                "message": f"Unable to search for trains: {str(e)}",
+                "suggestions": [
+                    "Check internet connection",
+                    "Verify city names are correct",
+                    "Try again in a few minutes",
+                    "Use IRCTC website or app directly"
+                ],
+                "data_source": "error_handler",
+                "route": f"{origin} → {destination}",
+                "error": str(e)
+            }]
     
     async def get_train_recommendations(self, origin: str, destination: str, 
                                      travel_date: datetime = None, 

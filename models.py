@@ -38,11 +38,11 @@ class WeatherData(BaseModel):
 class RouteDetails(BaseModel):
     origin: Location
     destination: Location
-    route_options: List[Dict[str, Any]]
+    route_options: List[Any]
     distance: float
     travel_time: str
     transportation_mode: str
-    map_html_path: Optional[str] = None  # Path to generated Folium map
+    route_geometry: Optional[List[List[float]]] = None  # Path to generated Folium map
 
 # Events Models
 class Event(BaseModel):

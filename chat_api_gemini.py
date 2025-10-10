@@ -238,7 +238,7 @@ Respond with either:
                 # Check for direct parameters in tool call
                 if params:
                     origin = params.get('departure_city') or params.get('origin')
-                    destination = params.get('arrival_city') or params.get('destination')
+                    destination = params.get('arrival_city') or params.get('destination') or params.get('destination_city')
                     dep_date = dateparser.parse(params.get('departure_date')) if params.get('departure_date')else None
                     if not dep_date:
                         dep_date=dateparser.parse(params.get('date')) if params.get('date') else None
@@ -298,7 +298,25 @@ Respond with either:
 
 
             elif "train" in tool_part:
-                destination = await self.extract_location_from_context(context, original_message)
+                basic_info = context.get("basic_info", {})
+                # Process tool call parameters first
+                origin = None
+                destination = None
+                dep_date = None
+                print(f"params:{params}")
+                # Check for direct parameters in tool call
+                if params:
+                    origin = params.get('departure_city') or params.get('origin')
+                    destination = params.get('arrival_city') or params.get('destination')
+                    dep_date = dateparser.parse(params.get('departure_date')) if params.get('departure_date')else None
+                    if not dep_date:
+                        dep_date=dateparser.parse(params.get('date')) if params.get('date') else None
+                    if origin:
+                        basic_info['origin'] = origin
+                    if destination:
+                        basic_info['destination'] = destination
+                    context['basic_info'] = basic_info
+                
                 if not destination:
                     suggestions = self._get_city_suggestions("india", "train")
                     return {
@@ -306,7 +324,7 @@ Respond with either:
                         "message": "Which city would you like to travel to by train?",
                         "suggested_responses": suggestions
                     }
-                trains_data = await self.tools["trains"].search_trains_between_cities("Delhi",destination,datetime.now()+timedelta(days=30))
+                trains_data = await self.tools["trains"].search_trains_between_cities(origin,destination,dep_date)
                 context["tool_data"]["trains"] = safe_json(trains_data)
                 return await self.interpret_tool_data(user_id,"trains",trains_data,original_message)
 
@@ -537,17 +555,22 @@ def setup_chat_routes(app):
                     context = chat_orchestrator.get_user_context(user_id)
                     context["basic_info"].update(session_data.get("basic_info", {}))
                 
-                # Show typing indicator
-                await connection_manager.send_message(user_id, {
-                    "type": "typing",
-                    "message": "🤖 Thinking..."
-                })
-                
-                # Process message through Gemini
-                response = await chat_orchestrator.process_user_message(user_id, message)
-                
-                # Send response back to client
-                await connection_manager.send_message(user_id, response)
+                # Only process message if it's not empty
+                if message and message.strip():
+                    # Show typing indicator
+                    await connection_manager.send_message(user_id, {
+                        "type": "typing",
+                        "message": "🤖 Thinking..."
+                    })
+                    
+                    # Process message through Gemini
+                    response = await chat_orchestrator.process_user_message(user_id, message)
+                    
+                    # Send response back to client
+                    await connection_manager.send_message(user_id, response)
+                else:
+                    # Just acknowledge the connection without generating a response
+                    print(f"Session data updated for {user_id}, no message to process")
                 
         except WebSocketDisconnect:
             connection_manager.disconnect(user_id)
@@ -632,6 +655,47 @@ What would you like to know first about your trip to {city}?
             "tool_data_available": list(context.get("tool_data", {}).keys()),
             "map_center": map_center
         }
+    
+    @app.post("/maps/route")
+    async def get_route_data(request: dict):
+            """Get route data between origin and destination"""
+            try:
+                origin = request.get("origin", "Delhi, India")
+                destination = request.get("destination", "Mumbai, India")
+                transport_mode = request.get("transport_mode", "driving")
+
+                logger.info(f"Getting route from {origin} to {destination} via {transport_mode}")
+
+                maps_tool = MapsTool()
+                route_details = await maps_tool.get_route(
+                    origin=origin,
+                    destination=destination,
+                    transport_mode=transport_mode
+                )
+
+                # ✅ Ensure we send the geometry
+                return {
+                    "success": True,
+                    "route_data": {
+                        **route_details.dict(),
+                        "route_geometry": route_details.route_geometry
+                    },
+                    "origin": route_details.origin.dict(),
+                    "destination": route_details.destination.dict(),
+                    "distance": route_details.distance,
+                    "travel_time": route_details.travel_time,
+                    "transportation_mode": route_details.transportation_mode,
+                    "route_options": route_details.route_options,
+                }
+
+            except Exception as e:
+                logger.error(f"Error getting route data: {str(e)}")
+                return {
+                    "success": False,
+                    "error": str(e),
+                    "route_data": None
+                }
+
     
     @app.delete("/trip/session/{user_id}")
     async def clear_trip_session(user_id: str):
