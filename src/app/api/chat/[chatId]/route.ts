@@ -38,3 +38,34 @@ export async function GET(
     return NextResponse.json({ error: err.message }, { status: 500 });
   }
 }
+
+export async function DELETE(
+  request: NextRequest,
+  { params }: { params: Promise<{ chatId: string }> }
+) {
+  try {
+    await connectDb();
+    
+    const { chatId } = await params;
+    console.log("Deleting chat with ID:", chatId);
+
+    if (!chatId) {
+      return NextResponse.json({ error: "Chat ID is required" }, { status: 400 });
+    }
+
+    if (!mongoose.Types.ObjectId.isValid(chatId)) {
+      return NextResponse.json({ error: "Invalid chat ID format" }, { status: 400 });
+    }
+
+    const chat = await Chat.findByIdAndDelete(chatId);
+    if (!chat) {
+      return NextResponse.json({ error: "Chat not found" }, { status: 404 });
+    }
+
+    console.log("Chat deleted successfully:", chatId);
+    return NextResponse.json({ message: "Trip deleted successfully" });
+  } catch (err: any) {
+    console.error("Error deleting chat:", err);
+    return NextResponse.json({ error: err.message }, { status: 500 });
+  }
+}

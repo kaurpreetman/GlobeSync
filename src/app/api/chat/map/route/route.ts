@@ -3,50 +3,119 @@ import connectDb from "@/lib/mongodb";
 import Chat from "@/lib/models/Chat";
 import mongoose from "mongoose";
 
-// Mock geocoding function to get coordinates for cities
-function getMockCoordinates(city: string) {
-  const cityCoords: Record<string, { lat: number; lng: number; address: string }> = {
-    "delhi": { lat: 28.6139, lng: 77.2090, address: "Delhi, India" },
-    "mumbai": { lat: 19.0760, lng: 72.8777, address: "Mumbai, India" },
-    "bangalore": { lat: 12.9716, lng: 77.5946, address: "Bangalore, India" },
-    "chennai": { lat: 13.0827, lng: 80.2707, address: "Chennai, India" },
-    "kolkata": { lat: 22.5726, lng: 88.3639, address: "Kolkata, India" },
-    "hyderabad": { lat: 17.3850, lng: 78.4867, address: "Hyderabad, India" },
-    "pune": { lat: 18.5204, lng: 73.8567, address: "Pune, India" },
-    "jaipur": { lat: 26.9124, lng: 75.7873, address: "Jaipur, India" },
-    "meerut": { lat: 28.9845, lng: 77.7064, address: "Meerut, India" },
-    "paris": { lat: 48.8566, lng: 2.3522, address: "Paris, France" },
-    "london": { lat: 51.5074, lng: -0.1278, address: "London, UK" },
-    "new york": { lat: 40.7128, lng: -74.0060, address: "New York, USA" },
-    "tokyo": { lat: 35.6762, lng: 139.6503, address: "Tokyo, Japan" },
-    "rome": { lat: 41.9028, lng: 12.4964, address: "Rome, Italy" },
-    "barcelona": { lat: 41.3851, lng: 2.1734, address: "Barcelona, Spain" },
-  };
+// Real-time geocoding using Nominatim (OpenStreetMap)
+async function geocodeLocation(location: string) {
+  try {
+    const encodedLocation = encodeURIComponent(location);
+    const response = await fetch(
+      `https://nominatim.openstreetmap.org/search?format=json&q=${encodedLocation}&limit=1&addressdetails=1`,
+      {
+        headers: {
+          'User-Agent': 'GlobeSync-TravelApp/1.0'
+        },
+        timeout: 10000
+      }
+    );
 
-  const normalizedCity = city.toLowerCase().replace(/,.*/, '').trim();
-  return cityCoords[normalizedCity] || { lat: 0, lng: 0, address: city };
+    if (!response.ok) {
+      throw new Error(`Geocoding API error: ${response.status}`);
+    }
+
+    const data = await response.json();
+    
+    if (!data || data.length === 0) {
+      throw new Error(`Location "${location}" not found`);
+    }
+
+    const result = data[0];
+    
+    return {
+      lat: parseFloat(result.lat),
+      lng: parseFloat(result.lon),
+      address: result.display_name,
+      city: result.address?.city || result.address?.town || result.address?.village || location,
+      country: result.address?.country || 'Unknown'
+    };
+  } catch (error) {
+    console.error(`Geocoding failed for "${location}":`, error);
+    throw new Error(`Unable to find location: ${location}`);
+  }
 }
 
-// Generate mock route geometry (curved path between two points)
-function generateMockRouteGeometry(origin: { lat: number; lng: number }, destination: { lat: number; lng: number }) {
-  const points = [];
-  const steps = 20; // Number of points in the route
-  
-  for (let i = 0; i <= steps; i++) {
-    const t = i / steps;
+// Get real route from OSRM (Open Source Routing Machine)
+async function getRouteFromOSRM(origin: { lat: number; lng: number }, destination: { lat: number; lng: number }, transportMode: string) {
+  try {
+    // Map transport modes to OSRM profiles
+    const profileMapping: Record<string, string> = {
+      "driving": "driving",
+      "walking": "foot",
+      "cycling": "bike",
+      "transit": "driving" // Fallback to driving for transit
+    };
     
-    // Linear interpolation with some curve
-    const lat = origin.lat + (destination.lat - origin.lat) * t;
-    let lng = origin.lng + (destination.lng - origin.lng) * t;
+    const profile = profileMapping[transportMode] || "driving";
     
-    // Add some curve to make it look more realistic
-    const curve = Math.sin(t * Math.PI) * 0.5;
-    lng += curve;
+    console.log(`🗺️ Requesting ${profile} route from OSRM:`, {
+      origin: `${origin.lat},${origin.lng}`,
+      destination: `${destination.lat},${destination.lng}`
+    });
     
-    points.push([lng, lat]); // GeoJSON format: [longitude, latitude]
+    // OSRM public API endpoint
+    const osrmUrl = `https://router.project-osrm.org/route/v1/${profile}/${origin.lng},${origin.lat};${destination.lng},${destination.lat}`;
+    
+    const params = new URLSearchParams({
+      overview: "full",
+      alternatives: "false",
+      steps: "false",
+      geometries: "geojson"
+    });
+    
+    const controller = new AbortController();
+    const timeoutId = setTimeout(() => controller.abort(), 15000);
+    
+    const response = await fetch(`${osrmUrl}?${params}`, {
+      signal: controller.signal,
+      headers: {
+        'User-Agent': 'GlobeSync-TravelApp/1.0'
+      }
+    });
+    
+    clearTimeout(timeoutId);
+    
+    if (!response.ok) {
+      throw new Error(`OSRM API responded with ${response.status}: ${response.statusText}`);
+    }
+    
+    const data = await response.json();
+    
+    if (data.code !== "Ok") {
+      throw new Error(`OSRM error: ${data.message || data.code}`);
+    }
+    
+    if (!data.routes || data.routes.length === 0) {
+      throw new Error("No routes found between these locations");
+    }
+    
+    const route = data.routes[0];
+    
+    if (!route.geometry || !route.geometry.coordinates || route.geometry.coordinates.length < 2) {
+      throw new Error("Invalid route geometry received");
+    }
+    
+    console.log(`✅ OSRM route found: ${(route.distance / 1000).toFixed(1)}km, ${Math.round(route.duration / 60)}min`);
+    
+    return {
+      geometry: route.geometry.coordinates,
+      distance: route.distance / 1000, // Convert to km
+      duration: route.duration, // In seconds
+      found: true
+    };
+    
+  } catch (error) {
+    const errorMessage = error instanceof Error ? error.message : 'Unknown routing error';
+    console.error(`❌ OSRM routing failed:`, errorMessage);
+    throw new Error(`Route not available: ${errorMessage}`);
   }
-  
-  return points;
 }
 
 function calculateDistance(origin: { lat: number; lng: number }, destination: { lat: number; lng: number }) {
@@ -65,6 +134,8 @@ export async function POST(req: NextRequest) {
     await connectDb();
     const { chatId, origin, destination, transportMode = "driving" } = await req.json();
 
+    console.log(`🗺️ Route request:`, { chatId, origin, destination, transportMode });
+
     if (!chatId) {
       return NextResponse.json({ error: "chatId is required" }, { status: 400 });
     }
@@ -77,18 +148,36 @@ export async function POST(req: NextRequest) {
       return NextResponse.json({ error: "Chat not found" }, { status: 404 });
     }
 
-    const backendUrl = process.env.BACKEND_URL || "http://localhost:8000";
     const finalOrigin = origin || "Delhi, India";
     const finalDestination = destination || chat.basic_info?.city || "Mumbai, India";
 
-    console.log(`🗺️ Getting route from ${finalOrigin} to ${finalDestination}`);
+    if (!finalOrigin || !finalDestination) {
+      return NextResponse.json({ 
+        error: "Both origin and destination are required" 
+      }, { status: 400 });
+    }
 
+    // Step 1: Geocode both locations using real-time geocoding
+    console.log(`📍 Geocoding locations: ${finalOrigin} -> ${finalDestination}`);
+    
+    const [originCoords, destCoords] = await Promise.all([
+      geocodeLocation(finalOrigin),
+      geocodeLocation(finalDestination)
+    ]);
+
+    console.log(`✅ Geocoding successful:`);
+    console.log(`  Origin: ${originCoords.city} (${originCoords.lat}, ${originCoords.lng})`);
+    console.log(`  Destination: ${destCoords.city} (${destCoords.lat}, ${destCoords.lng})`);
+
+    // Step 2: Try to get route from backend first
+    const backendUrl = process.env.BACKEND_URL || "http://localhost:8000";
     let routeData;
     
     try {
-      // Try to fetch from backend first (with shorter timeout)
+      console.log(`🔍 Trying backend route service at ${backendUrl}`);
+      
       const controller = new AbortController();
-      const timeoutId = setTimeout(() => controller.abort(), 5000); // 5 second timeout
+      const timeoutId = setTimeout(() => controller.abort(), 10000);
       
       const backendRes = await fetch(`${backendUrl}/maps/route`, {
         method: "POST",
@@ -107,7 +196,7 @@ export async function POST(req: NextRequest) {
         const backendJson = await backendRes.json();
         if (backendJson?.success) {
           routeData = backendJson.route_data;
-          console.log("✅ Using real backend route data");
+          console.log("✅ Backend route service successful");
         } else {
           throw new Error(backendJson?.error || "Backend returned unsuccessful response");
         }
@@ -115,57 +204,73 @@ export async function POST(req: NextRequest) {
         throw new Error(`Backend responded with status ${backendRes.status}`);
       }
     } catch (backendError: any) {
-      console.log(`⚠️ Backend unavailable (${backendError.message}), using mock data`);
+      console.log(`⚠️ Backend unavailable: ${backendError.message}`);
       
-      // Generate mock route data
-      const originCoords = getMockCoordinates(finalOrigin);
-      const destCoords = getMockCoordinates(finalDestination);
-      const distance = calculateDistance(originCoords, destCoords);
-      const routeGeometry = generateMockRouteGeometry(originCoords, destCoords);
-      
-      // Estimate travel time based on distance and transport mode
-      const speedMap = { driving: 60, walking: 5, cycling: 15, transit: 40 };
-      const speed = speedMap[transportMode as keyof typeof speedMap] || 60;
-      const timeHours = distance / speed;
-      const timeText = timeHours < 1 ? `${Math.round(timeHours * 60)} mins` : `${Math.floor(timeHours)}h ${Math.round((timeHours % 1) * 60)}m`;
-      
-      routeData = {
-        origin: {
-          lat: originCoords.lat,
-          lng: originCoords.lng,
-          city: finalOrigin,
-          address: originCoords.address
-        },
-        destination: {
-          lat: destCoords.lat,
-          lng: destCoords.lng,
-          city: finalDestination,
-          address: destCoords.address
-        },
-        distance: Math.round(distance * 10) / 10,
-        travel_time: timeText,
-        transportation_mode: transportMode,
-        route_geometry: routeGeometry,
-        route_options: [{
-          route_name: "Main Route",
-          distance: distance,
-          duration: timeText,
-          distance_text: `${Math.round(distance * 10) / 10} km`
-        }],
-        mock_data: true // Flag to indicate this is mock data
-      };
-      
-      console.log("🎭 Using mock route data with curved geometry");
+      // Step 3: Fallback to direct OSRM routing
+      try {
+        console.log(`🔄 Trying direct OSRM routing...`);
+        const osrmRoute = await getRouteFromOSRM(originCoords, destCoords, transportMode);
+        
+        const timeText = osrmRoute.duration > 0
+          ? osrmRoute.duration < 3600 
+            ? `${Math.round(osrmRoute.duration / 60)} mins`
+            : `${Math.floor(osrmRoute.duration / 3600)}h ${Math.round((osrmRoute.duration % 3600) / 60)}m`
+          : "N/A";
+        
+        routeData = {
+          origin: {
+            lat: originCoords.lat,
+            lng: originCoords.lng,
+            city: originCoords.city,
+            address: originCoords.address
+          },
+          destination: {
+            lat: destCoords.lat,
+            lng: destCoords.lng,
+            city: destCoords.city,
+            address: destCoords.address
+          },
+          distance: Math.round(osrmRoute.distance * 10) / 10,
+          travel_time: timeText,
+          transportation_mode: transportMode,
+          route_geometry: osrmRoute.geometry,
+          route_options: [{
+            route_name: "Optimal Route",
+            distance: osrmRoute.distance,
+            duration: timeText,
+            distance_text: `${Math.round(osrmRoute.distance * 10) / 10} km`
+          }],
+          route_type: "road"
+        };
+        
+        console.log(`✅ Direct OSRM routing successful`);
+      } catch (osrmError: any) {
+        console.error(`❌ All routing methods failed:`, osrmError.message);
+        
+        // Return error - no fallback modes
+        return NextResponse.json({ 
+          success: false, 
+          error: `Unable to find route between ${finalOrigin} and ${finalDestination}: ${osrmError.message}`,
+          locations: {
+            origin: originCoords,
+            destination: destCoords
+          }
+        }, { status: 404 });
+      }
     }
 
     // Save route data to chat
     chat.route_data = routeData;
     await chat.save();
 
+    console.log(`✅ Route data saved successfully`);
     return NextResponse.json({ success: true, route_data: routeData });
 
   } catch (err: any) {
-    console.error("Error in /api/chat/map/route:", err);
-    return NextResponse.json({ success: false, error: err.message || "Internal Server Error" }, { status: 500 });
+    console.error("❌ Error in /api/chat/map/route:", err);
+    return NextResponse.json({ 
+      success: false, 
+      error: err.message || "Failed to process route request" 
+    }, { status: 500 });
   }
 }

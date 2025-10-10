@@ -12,5 +12,6 @@ export const config = {
     "/compare/:path*",   // protect compare page
     "/dashboard/:path*", // protect dashboard
     "/planning/:path*",  // protect planning page for consistency
+    "/trips/:path*",     // protect trips page
   ],
 };

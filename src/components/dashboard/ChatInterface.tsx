@@ -7,12 +7,13 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { MarkdownRenderer } from "@/components/ui/markdown-renderer";
 import { useSession } from "next-auth/react";
+import { formatMessageTime } from "@/lib/utils/dateUtils";
 
 interface Message {
   id: string;
   role: "user" | "assistant" | "system";
   content: string;
-  timestamp: Date;
+  timestamp: Date | string | number;
   suggested_responses?: string[];
 }
 
@@ -91,7 +92,7 @@ const ChatInterface: React.FC<ChatInterfaceProps> = ({ messages, onSendMessage, 
                >
                 <MarkdownRenderer content={msg.content} />
                 <span className="text-xs opacity-70 mt-1 block">
-                  {msg.timestamp.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}
+                  {formatMessageTime(msg.timestamp)}
                 </span>
               </div>
               {msg.role === "user" && (

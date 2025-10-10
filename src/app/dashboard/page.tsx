@@ -1,7 +1,7 @@
 "use client";
 
 import React, { useState, useEffect, useRef } from "react";
-import { useSearchParams } from "next/navigation";
+import { useSearchParams, useRouter } from "next/navigation";
 import { motion } from "framer-motion";
 import { Bot } from "lucide-react";
 import dynamic from "next/dynamic";
@@ -19,6 +19,7 @@ type TripContext = {
 
 export default function TravelDashboard() {
   const { data: session } = useSession();
+  const router = useRouter();
   const searchParams = useSearchParams();
   const querySessionId = searchParams.get("sessionId");
 
@@ -48,6 +49,7 @@ export default function TravelDashboard() {
             ...m,
             timestamp: m.timestamp ? new Date(m.timestamp) : new Date(),
             suggested_responses: m.suggested_responses || [],
+            id: m.id || Date.now().toString() + Math.random()
           }))
         );
       } catch (err) {
@@ -171,13 +173,15 @@ export default function TravelDashboard() {
             transportMode: "driving",
           }),
         });
-        const json = await res.json();
-        if (json.success) {
-          console.log("🗺️ Route data received:", json.route_data);
-          setRouteData(json.route_data);
-        } else {
-          console.error("Route fetch failed:", json.error);
-        }
+      const json = await res.json();
+      if (json.success) {
+        console.log("🗺️ Route data received:", json.route_data);
+        setRouteData(json.route_data);
+      } else {
+        console.error("Route fetch failed:", json.error);
+        // Don't set any route data if route fails - user will see "no route" state
+        setRouteData(null);
+      }
       } catch (err) {
         console.error("Route fetch error:", err);
       }
@@ -187,52 +191,9 @@ export default function TravelDashboard() {
   }, [sessionId, tripContext, routeData]);
 
   // 🔹 5. Create new chat
-  const createNewChat = async () => {
-    if (!session?.user?.id || !tripContext) return;
-
-    try {
-      const res = await fetch("/api/chat/initialize", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ userId: session.user.id, basic_info: tripContext }),
-      });
-
-      if (!res.ok) throw new Error("Failed to initialize new chat");
-      const data = await res.json();
-      setSessionId(data.sessionId);
-
-      const chatRes = await fetch(`/api/chat/${data.sessionId}`);
-      const chatData = await chatRes.json();
-      setMessages(
-        (chatData.messages || []).map((m: any) => ({
-          ...m,
-          timestamp: new Date(m.timestamp),
-        }))
-      );
-      setRouteData(chatData.route_data ?? null);
-
-      // Fetch route for the new session
-      if (tripContext.origin && tripContext.city) {
-        const routeRes = await fetch("/api/chat/map/route", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({
-            chatId: data.sessionId,
-            origin: tripContext.origin,
-            destination: tripContext.city,
-            transportMode: "driving",
-          }),
-        });
-
-        const routeJson = await routeRes.json();
-        if (routeJson?.success) {
-          console.log("🗺️ New chat route data received:", routeJson.route_data);
-          setRouteData(routeJson.route_data);
-        }
-      }
-    } catch (err) {
-      console.error("Error creating new chat:", err);
-    }
+  const createNewChat = () => {
+    // Navigate to explore page to create a new trip
+    router.push("/explore");
   };
 
   // 🔹 6. Render UI
