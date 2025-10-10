@@ -3,7 +3,8 @@ import httpx
 import json
 import re, logging
 from datetime import datetime, timedelta
-from ddgs import DDGS
+from duckduckgo_search import DDGS
+
 from langchain_google_genai import ChatGoogleGenerativeAI
 
 # Configure logging
