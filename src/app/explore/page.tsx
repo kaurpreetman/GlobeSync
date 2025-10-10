@@ -12,6 +12,7 @@ export default function Explore() {
 
   const [step, setStep] = useState(0);
   const steps = [
+    "Origin City",
     "Destination City",
     "Trip Duration (days)",
     "Month to Travel",
@@ -20,6 +21,7 @@ export default function Explore() {
   ];
 
   const [form, setForm] = useState({
+    origin: "",
     city: "",
     duration: "",
     month: "",
@@ -34,14 +36,16 @@ export default function Explore() {
     const value = (() => {
       switch (s) {
         case 0:
-          return form.city?.trim();
+          return form.origin?.trim();
         case 1:
-          return form.duration?.toString();
+          return form.city?.trim();
         case 2:
-          return form.month;
+          return form.duration?.toString();
         case 3:
-          return form.tripType;
+          return form.month;
         case 4:
+          return form.tripType;
+        case 5:
           return form.budget;
         default:
           return "";
@@ -49,7 +53,7 @@ export default function Explore() {
     })();
 
     if (!value) return false;
-    if (s === 1) {
+    if (s === 2) {
       const n = Number(form.duration);
       return !Number.isNaN(n) && n > 0;
     }
@@ -112,12 +116,19 @@ export default function Explore() {
 
             {step === 0 && (
               <Input
+                placeholder="e.g. Meerut"
+                value={form.origin}
+                onChange={(e) => update("origin", e.target.value)}
+              />
+            )}
+            {step === 1 && (
+              <Input
                 placeholder="e.g. Paris"
                 value={form.city}
                 onChange={(e) => update("city", e.target.value)}
               />
             )}
-            {step === 1 && (
+            {step === 2 && (
               <Input
                 type="number"
                 min={1}
@@ -126,7 +137,7 @@ export default function Explore() {
                 onChange={(e) => update("duration", e.target.value)}
               />
             )}
-            {step === 2 && (
+            {step === 3 && (
               <select
                 value={form.month}
                 onChange={(e) => update("month", e.target.value)}
@@ -141,7 +152,7 @@ export default function Explore() {
                 ))}
               </select>
             )}
-            {step === 3 && (
+            {step === 4 && (
               <select
                 value={form.tripType}
                 onChange={(e) => update("tripType", e.target.value)}
@@ -155,7 +166,7 @@ export default function Explore() {
                 <option>Business</option>
               </select>
             )}
-            {step === 4 && (
+            {step === 5 && (
               <select
                 value={form.budget}
                 onChange={(e) => update("budget", e.target.value)}
@@ -169,24 +180,24 @@ export default function Explore() {
             )}
           </div>
 
-          <div className="flex items-center justify-between mt-6">
-            <div className="flex gap-2">
-              <Button onClick={handleBack} disabled={step === 0} type="button">
-                Back
-              </Button>
-              {step < steps.length - 1 ? (
-                <Button onClick={handleNext} type="button">
-                  Next
+            <div className="flex items-center justify-between mt-6">
+              <div className="flex gap-2">
+                <Button onClick={handleBack} disabled={step === 0} type="button">
+                  Back
                 </Button>
-              ) : (
-                <Button type="submit" className="bg-indigo-600 text-white">
-                  Start Planning
-                </Button>
-              )}
-            </div>
+                {step < steps.length - 1 ? (
+                  <Button onClick={handleNext} type="button">
+                    Next
+                  </Button>
+                ) : (
+                  <Button type="submit" className="bg-indigo-600 text-white">
+                    Start Planning
+                  </Button>
+                )}
+              </div>
 
-            <div className="text-sm text-gray-500">{progressPercent}%</div>
-          </div>
+              <div className="text-sm text-gray-500">{progressPercent}%</div>
+            </div>
         </form>
       </div>
     </div>

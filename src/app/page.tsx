@@ -2,8 +2,9 @@
 
 import { Button } from "@/components/ui/button";
 import { ArrowRight } from "lucide-react";
-import Link from "next/link";
 import { useRouter } from "next/navigation";
+import { useSession } from "next-auth/react";
+import { useEffect } from "react";
 import DestinationCard from "@/components/Cards/DestinationCard";
 import FeatureCard from "@/components/Cards/FeatureCard";
 
@@ -17,6 +18,12 @@ import heroImage from "@/assets/hero-travel.jpg";
 
 export default function Home() {
   const router = useRouter();
+  const { data: session, status } = useSession();
+
+  // Force component re-render when session changes
+  useEffect(() => {
+    // This effect will re-run when session state changes
+  }, [session, status]);
 
   const destinations = [
     { name: "Paris", image: parisImage },
@@ -74,13 +81,17 @@ export default function Home() {
           </p>
 
           <div className="flex flex-col sm:flex-row gap-4 justify-center">
-            <Button asChild variant="travel" size="lg">
-              <Link href="/explore">
-                Start Planning
-                <ArrowRight className="ml-2 h-4 w-4" />
-              </Link>
+            <Button
+              variant="travel"
+              size="lg"
+              onClick={() => {
+                if (session) router.push("/explore");
+                else router.push(`/auth?callbackUrl=${encodeURIComponent("/explore")}`);
+              }}
+            >
+              Start Planning
+              <ArrowRight className="ml-2 h-4 w-4" />
             </Button>
-            
           </div>
         </div>
       </section>

@@ -159,26 +159,31 @@ export default function TravelDashboard() {
   // 🔹 4. Auto-fetch route data if not already loaded
    useEffect(() => {
     const fetchRoute = async () => {
-      if (!sessionId || !tripContext?.city) return;
+      if (!sessionId || !tripContext?.city || !tripContext?.origin) return;
       try {
         const res = await fetch("/api/chat/map/route", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({
             chatId: sessionId,
-            origin: "Meerut, India",
+            origin: tripContext.origin,
             destination: tripContext.city,
             transportMode: "driving",
           }),
         });
         const json = await res.json();
-        if (json.success) setRouteData(json.route_data);
+        if (json.success) {
+          console.log("🗺️ Route data received:", json.route_data);
+          setRouteData(json.route_data);
+        } else {
+          console.error("Route fetch failed:", json.error);
+        }
       } catch (err) {
         console.error("Route fetch error:", err);
       }
     };
 
-    if (!routeData && tripContext?.city) fetchRoute();
+    if (!routeData && tripContext?.city && tripContext?.origin) fetchRoute();
   }, [sessionId, tripContext, routeData]);
 
   // 🔹 5. Create new chat
@@ -207,19 +212,24 @@ export default function TravelDashboard() {
       setRouteData(chatData.route_data ?? null);
 
       // Fetch route for the new session
-      const routeRes = await fetch("/api/chat/map/route", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          chatId: data.sessionId,
-          origin: "Meerut, India",
-          destination: tripContext.city ?? "Delhi, India",
-          transportMode: "driving",
-        }),
-      });
+      if (tripContext.origin && tripContext.city) {
+        const routeRes = await fetch("/api/chat/map/route", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            chatId: data.sessionId,
+            origin: tripContext.origin,
+            destination: tripContext.city,
+            transportMode: "driving",
+          }),
+        });
 
-      const routeJson = await routeRes.json();
-      if (routeJson?.success) setRouteData(routeJson.route_data);
+        const routeJson = await routeRes.json();
+        if (routeJson?.success) {
+          console.log("🗺️ New chat route data received:", routeJson.route_data);
+          setRouteData(routeJson.route_data);
+        }
+      }
     } catch (err) {
       console.error("Error creating new chat:", err);
     }

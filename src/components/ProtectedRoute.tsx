@@ -1,25 +1,31 @@
 "use client";
 
 import { useSession } from "next-auth/react";
-import { useRouter } from "next/navigation";
-import { useEffect } from "react";
+import { useRouter, usePathname } from "next/navigation";
+import { useEffect, ReactNode } from "react";
 
 interface ProtectedRouteProps {
-  children: React.ReactNode;
+  children: ReactNode;
 }
 
 const ProtectedRoute: React.FC<ProtectedRouteProps> = ({ children }) => {
   const { data: session, status } = useSession();
   const router = useRouter();
+  const pathname = usePathname();
 
   useEffect(() => {
-    if (status === "loading") return; // wait until session loads
-    if (!session) {
-      router.replace("/auth"); // redirect immediately if not logged in
+    if (status === "unauthenticated") {
+      router.replace(`/auth?callbackUrl=${encodeURIComponent(pathname)}`);
     }
-  }, [session, status, router]);
+  }, [status, router, pathname]);
 
-  if (status === "loading" || !session) return null; // optional: loading spinner
+  if (status === "loading") {
+    return (
+      <div className="flex items-center justify-center h-screen text-lg font-semibold">
+        Loading...
+      </div>
+    );
+  }
 
   return <>{children}</>;
 };

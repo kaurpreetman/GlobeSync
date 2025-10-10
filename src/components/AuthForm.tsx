@@ -104,8 +104,12 @@ const AuthForm: React.FC<{ onSuccess?: () => void }> = ({ onSuccess }) => {
         email: form.email,
         password: form.password,
       });
-      if (res?.error) setError(res.error);
-      else onSuccess?.();
+      if (res?.error) {
+        setError(res.error);
+      } else {
+        // Wait for session to update and then call success callback
+        setTimeout(() => onSuccess?.(), 100);
+      }
     } catch (err: any) {
       setError(err.message || "Login failed");
     } finally {
@@ -117,7 +121,11 @@ const AuthForm: React.FC<{ onSuccess?: () => void }> = ({ onSuccess }) => {
   const handleGoogle = async () => {
     setLoading(true);
     try {
-      await signIn("google", { callbackUrl: "/" });
+      // Get callback URL from current page URL params if available
+      const urlParams = new URLSearchParams(window.location.search);
+      const callbackUrl = urlParams.get("callbackUrl") || "/";
+      
+      await signIn("google", { callbackUrl });
     } catch (err: any) {
       setError(err.message || "Google authentication failed");
     } finally {

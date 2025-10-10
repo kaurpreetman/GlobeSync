@@ -85,6 +85,11 @@ const MapComponent: React.FC<MapComponentProps> = ({ routeData }) => {
           <div>Distance: {distance?.toFixed(1)} km</div>
           <div>Duration: {travel_time}</div>
           <div>Mode: {transportation_mode}</div>
+          {routeData.mock_data && (
+            <div className="text-xs text-amber-600 mt-2 font-medium">
+              🎭 Demo Mode (Backend offline)
+            </div>
+          )}
         </div>
       </div>
     </div>
