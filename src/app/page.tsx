@@ -6,7 +6,6 @@ import { useRouter } from "next/navigation";
 import { useSession } from "next-auth/react";
 import { useEffect } from "react";
 import DestinationCard from "@/components/Cards/DestinationCard";
-import FeatureCard from "@/components/Cards/FeatureCard";
 import CalendarIntegration from "@/components/calendar/CalendarIntegration";
 import CityComparisonModal from "@/components/travel/CityComparisonModal";
 
@@ -28,32 +27,59 @@ export default function Home() {
   }, [session, status]);
 
   const destinations = [
-    { name: "Paris", image: parisImage },
-    { name: "Tokyo", image: tokyoImage },
-    { name: "New York", image: newYorkImage },
-    { name: "London", image: londonImage },
-    { name: "Rome", image: romeImage },
-    { name: "Barcelona", image: barcelonaImage },
-  ];
-
-  const popularTrips = [
     {
-      title: "Beach Getaway",
-      description: "Relax on the sandy shores",
-      image:
-        "https://images.unsplash.com/photo-1507525428034-b723cf961d3e?w=600&h=400&fit=crop",
+      name: "Paris",
+      image: parisImage,
+      description: "City of Light and Romance",
+      highlights: ["Eiffel Tower", "Louvre Museum", "Notre-Dame Cathedral"],
+      culture: "French cuisine, art galleries, and romantic ambiance",
+      bestTime: "Apr-Jun, Sep-Oct",
+      famousFor: "Fashion, art, cuisine, and iconic landmarks"
     },
     {
-      title: "Mountain Retreat",
-      description: "Hike through scenic trails",
-      image:
-        "https://images.unsplash.com/photo-1464822759844-d150baec93d1?w=600&h=400&fit=crop",
+      name: "Tokyo",
+      image: tokyoImage,
+      description: "Modern Metropolis meets Tradition",
+      highlights: ["Shibuya Crossing", "Senso-ji Temple", "Tokyo Skytree"],
+      culture: "Blend of ancient traditions and cutting-edge technology",
+      bestTime: "Mar-May, Sep-Nov",
+      famousFor: "Sushi, technology, anime culture, and cherry blossoms"
     },
     {
-      title: "City Exploration",
-      description: "Discover vibrant city life",
-      image:
-        "https://images.unsplash.com/photo-1477959858617-67f85cf4f1df?w=600&h=400&fit=crop",
+      name: "New York",
+      image: newYorkImage,
+      description: "The City That Never Sleeps",
+      highlights: ["Times Square", "Central Park", "Statue of Liberty"],
+      culture: "Melting pot of cultures, Broadway shows, and urban energy",
+      bestTime: "Apr-Jun, Sep-Nov",
+      famousFor: "Skyscrapers, Broadway, museums, and diverse neighborhoods"
+    },
+    {
+      name: "London",
+      image: londonImage,
+      description: "Historic Capital of England",
+      highlights: ["Big Ben", "Tower of London", "British Museum"],
+      culture: "Royal heritage, afternoon tea, and theatrical performances",
+      bestTime: "May-Sep",
+      famousFor: "Royal palaces, museums, pubs, and rich history"
+    },
+    {
+      name: "Rome",
+      image: romeImage,
+      description: "The Eternal City",
+      highlights: ["Colosseum", "Vatican City", "Trevi Fountain"],
+      culture: "Ancient Roman history, Italian cuisine, and religious art",
+      bestTime: "Apr-Jun, Sep-Oct",
+      famousFor: "Ancient ruins, Italian cuisine, Vatican art, and history"
+    },
+    {
+      name: "Barcelona",
+      image: barcelonaImage,
+      description: "Architectural Marvel of Spain",
+      highlights: ["Sagrada Familia", "Park Güell", "Gothic Quarter"],
+      culture: "Catalan architecture, tapas culture, and Mediterranean lifestyle",
+      bestTime: "May-Jul, Sep-Oct",
+      famousFor: "Gaudí architecture, beaches, nightlife, and Mediterranean cuisine"
     },
   ];
 
@@ -110,48 +136,36 @@ export default function Home() {
       </section>
 
       {/* Suggested Destinations */}
-      <section className="py-20 px-4">
+      <section className="py-24 px-4 bg-gradient-to-br from-slate-50 via-white to-blue-50">
         <div className="container mx-auto">
-          <div className="text-center mb-16">
-            <h2 className="text-4xl font-bold mb-4">Suggested Destinations</h2>
-            <p className="text-xl text-muted-foreground">
-              Discover your next adventure
+          <div className="text-center mb-20">
+            <div className="inline-block px-4 py-2 mb-6 bg-blue-100 rounded-full">
+              <span className="text-blue-800 font-medium text-sm">✈️ Popular Destinations</span>
+            </div>
+            <h2 className="text-5xl font-bold mb-6 bg-gradient-to-r from-blue-600 to-purple-600 bg-clip-text text-transparent">
+              Discover Amazing Places
+            </h2>
+            <p className="text-xl text-gray-600 max-w-3xl mx-auto leading-relaxed">
+              Explore these incredible destinations with detailed insights about their famous landmarks, 
+              cultural highlights, and the best times to visit. Each location offers unique experiences 
+              waiting to be discovered.
             </p>
           </div>
-          <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-6 gap-4 max-w-6xl mx-auto">
+          <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-8 max-w-6xl mx-auto">
+            {/* Enhanced destination cards with detailed information */}
             {destinations.map((destination) => (
               <DestinationCard
                 key={destination.name}
                 name={destination.name}
                 image={destination.image.src}
+                description={destination.description}
+                highlights={destination.highlights}
+                culture={destination.culture}
+                bestTime={destination.bestTime}
+                famousFor={destination.famousFor}
                 onClick={() =>
-                  router.push(`/compare?destinations=${destination.name}`)
+                  router.push(`/destination/${encodeURIComponent(destination.name)}`)
                 }
-              />
-            ))}
-          </div>
-        </div>
-      </section>
-
-      {/* Popular Trips */}
-      <section className="py-20 px-4 bg-gradient-subtle">
-        <div className="container mx-auto">
-          <div className="text-center mb-16">
-            <h2 className="text-4xl font-bold mb-4">Popular Trips</h2>
-            <p className="text-xl text-muted-foreground">
-              Everything you need to plan the perfect trip
-            </p>
-          </div>
-
-          <div className="grid md:grid-cols-3 gap-8 max-w-4xl mx-auto">
-            {popularTrips.map((trip) => (
-              <FeatureCard
-                key={trip.title}
-                title={trip.title}
-                description={trip.description}
-                image={trip.image}
-                buttonText="Explore"
-                onButtonClick={() => router.push("/explore")}
               />
             ))}
           </div>
