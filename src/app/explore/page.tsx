@@ -4,9 +4,12 @@ import { useState } from "react";
 import { useRouter } from "next/navigation";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
+import { useSession } from "next-auth/react";
 
 export default function Explore() {
   const router = useRouter();
+  const { data: session } = useSession();
+
   const [step, setStep] = useState(0);
   const steps = [
     "Destination City",
@@ -60,16 +63,29 @@ export default function Explore() {
 
   const handleBack = () => setStep((p) => Math.max(p - 1, 0));
 
-  const handleSubmit = (e?: React.FormEvent) => {
+  // ✅ Send trip info to backend and redirect with sessionId
+  const handleSubmit = async (e?: React.FormEvent) => {
     e?.preventDefault();
-    // final validation
-    for (let i = 0; i < steps.length; i++) {
-      if (!validateStep(i)) return;
-    }
+    for (let i = 0; i < steps.length; i++) if (!validateStep(i)) return;
 
-    // store the gathered trip info and redirect
-    localStorage.setItem("trip_basic_info", JSON.stringify(form));
-    router.push("/dashboard");
+    try {
+      const res = await fetch("/api/chat/initialize", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          userId: session?.user?.id,
+          basic_info: form,
+        }),
+      });
+
+      if (!res.ok) throw new Error("Failed to initialize chat");
+
+      const data = await res.json();
+
+      router.push(`/dashboard?sessionId=${data.sessionId}`);
+    } catch (err) {
+      console.error("Error initializing trip:", err);
+    }
   };
 
   const progressPercent = Math.round(((step + 1) / steps.length) * 100);
@@ -80,84 +96,56 @@ export default function Explore() {
         <h1 className="text-3xl font-bold text-gray-800 mb-2">Plan Your Trip</h1>
         <p className="text-sm text-gray-500 mb-6">Answer a few quick questions to get started.</p>
 
-        {/* progress bar */}
+        {/* Progress bar */}
         <div className="w-full bg-gray-200 rounded-full h-2 mb-6">
           <div
             className="bg-indigo-600 h-2 rounded-full transition-all"
             style={{ width: `${progressPercent}%` }}
-            aria-valuenow={progressPercent}
-            aria-valuemin={0}
-            aria-valuemax={100}
           />
         </div>
 
-        <form
-          onSubmit={handleSubmit}
-          className="bg-white shadow rounded-lg p-6 border"
-          aria-labelledby="explore-form"
-        >
+        <form onSubmit={handleSubmit} className="bg-white shadow rounded-lg p-6 border">
           <div className="mb-4">
             <label className="block text-lg font-medium text-gray-700 mb-2">
               {steps[step]}
             </label>
 
-            {/* Step inputs */}
             {step === 0 && (
               <Input
-                id="city"
-                type="text"
                 placeholder="e.g. Paris"
                 value={form.city}
                 onChange={(e) => update("city", e.target.value)}
-                className="rounded-md"
-                aria-required
               />
             )}
-
             {step === 1 && (
               <Input
-                id="duration"
                 type="number"
                 min={1}
                 placeholder="e.g. 5"
                 value={form.duration}
                 onChange={(e) => update("duration", e.target.value)}
-                className="rounded-md"
-                aria-required
               />
             )}
-
             {step === 2 && (
               <select
-                id="month"
                 value={form.month}
                 onChange={(e) => update("month", e.target.value)}
-                className="w-full border rounded-md px-3 py-2 text-gray-700"
-                aria-required
+                className="w-full border rounded-md px-3 py-2"
               >
                 <option value="">Select month</option>
-                <option>January</option>
-                <option>February</option>
-                <option>March</option>
-                <option>April</option>
-                <option>May</option>
-                <option>June</option>
-                <option>July</option>
-                <option>August</option>
-                <option>September</option>
-                <option>October</option>
-                <option>November</option>
-                <option>December</option>
+                {[
+                  "January", "February", "March", "April", "May", "June",
+                  "July", "August", "September", "October", "November", "December",
+                ].map((m) => (
+                  <option key={m}>{m}</option>
+                ))}
               </select>
             )}
-
             {step === 3 && (
               <select
-                id="tripType"
                 value={form.tripType}
                 onChange={(e) => update("tripType", e.target.value)}
-                className="w-full border rounded-md px-3 py-2 text-gray-700"
-                aria-required
+                className="w-full border rounded-md px-3 py-2"
               >
                 <option value="">Select type</option>
                 <option>Family</option>
@@ -167,14 +155,11 @@ export default function Explore() {
                 <option>Business</option>
               </select>
             )}
-
             {step === 4 && (
               <select
-                id="budget"
                 value={form.budget}
                 onChange={(e) => update("budget", e.target.value)}
-                className="w-full border rounded-md px-3 py-2 text-gray-700"
-                aria-required
+                className="w-full border rounded-md px-3 py-2"
               >
                 <option value="">Select budget</option>
                 <option>Low</option>
@@ -185,25 +170,16 @@ export default function Explore() {
           </div>
 
           <div className="flex items-center justify-between mt-6">
-            <div className="flex items-center gap-2">
-              <Button
-                type="button"
-                onClick={handleBack}
-                disabled={step === 0}
-                className="bg-gray-100 text-gray-700 rounded-md"
-              >
+            <div className="flex gap-2">
+              <Button onClick={handleBack} disabled={step === 0} type="button">
                 Back
               </Button>
               {step < steps.length - 1 ? (
-                <Button
-                  type="button"
-                  onClick={handleNext}
-                  className="bg-indigo-600 text-white rounded-md"
-                >
+                <Button onClick={handleNext} type="button">
                   Next
                 </Button>
               ) : (
-                <Button type="submit" className="bg-indigo-600 text-white rounded-md">
+                <Button type="submit" className="bg-indigo-600 text-white">
                   Start Planning
                 </Button>
               )}
