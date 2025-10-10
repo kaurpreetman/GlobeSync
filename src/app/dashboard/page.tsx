@@ -7,6 +7,8 @@ import { Bot } from "lucide-react";
 import dynamic from "next/dynamic";
 import { useSession } from "next-auth/react";
 import ChatInterface from "@/components/dashboard/ChatInterface";
+import CalendarStatusWidget from "@/components/dashboard/CalendarStatusWidget";
+import FloatingToolIcons from "@/components/dashboard/FloatingToolIcons";
 
 const MapComponent = dynamic(() => import("@/components/dashboard/MapComponent"), { ssr: false });
 
@@ -92,15 +94,35 @@ export default function TravelDashboard() {
         setMessages((prev) => {
           const exists = prev.some((m) => m.content === data.message && m.role === "assistant");
           if (exists) return prev;
+          
+          const assistantMessage = {
+            id: Date.now().toString(),
+            role: "assistant",
+            content: data.message,
+            timestamp: new Date(),
+            suggested_responses: data.suggested_responses || [],
+          };
+          
+          // Store assistant message in database
+          if (session?.user?.id) {
+            fetch('/api/chat/store-assistant-message', {
+              method: 'POST',
+              headers: {
+                'Content-Type': 'application/json',
+              },
+              body: JSON.stringify({
+                chatId: sessionId,
+                message: assistantMessage,
+                userId: session.user.id
+              })
+            }).catch(error => {
+              console.warn('Failed to store assistant message:', error);
+            });
+          }
+          
           return [
             ...prev,
-            {
-              id: Date.now().toString(),
-              role: "assistant",
-              content: data.message,
-              timestamp: new Date(),
-              suggested_responses: data.suggested_responses || [],
-            },
+            assistantMessage
           ];
         });
 
@@ -211,6 +233,9 @@ export default function TravelDashboard() {
               <p className="text-sm text-gray-600">{tripContext?.city ?? ""}</p>
             </div>
           </div>
+          <div className="w-48 relative z-50">
+            <CalendarStatusWidget tripId={sessionId || undefined} />
+          </div>
         </div>
       </motion.div>
 
@@ -236,6 +261,15 @@ export default function TravelDashboard() {
           />
         </motion.div>
       </div>
+      
+      {/* Floating Tool Icons */}
+      <FloatingToolIcons
+        tripContext={tripContext}
+        sessionId={sessionId}
+        onToolResult={(toolType, result) => {
+          console.log(`Dashboard tool ${toolType} result:`, result);
+        }}
+      />
     </div>
   );
 }

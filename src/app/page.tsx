@@ -7,6 +7,7 @@ import { useSession } from "next-auth/react";
 import { useEffect } from "react";
 import DestinationCard from "@/components/Cards/DestinationCard";
 import FeatureCard from "@/components/Cards/FeatureCard";
+import CalendarIntegration from "@/components/calendar/CalendarIntegration";
 
 import parisImage from "@/assets/paris.jpg";
 import tokyoImage from "@/assets/tokyo.jpg";
@@ -145,24 +146,20 @@ export default function Home() {
         </div>
       </section>
 
-      {/* CTA Section */}
-      <section className="py-20 px-4 bg-gradient-to-r from-travel-blue to-travel-blue-light">
-        <div className="container mx-auto text-center">
-          <h2 className="text-4xl font-bold text-white mb-4">
-            Connect your calendar to receive AI-powered travel reminders and
-            updates.
-          </h2>
-          <p className="text-xl text-white/90 mb-8">
-            Never miss a beat. Connect your calendar to automatically sync your
-            travel plans.
-          </p>
-          <Button
-            variant="travel-outline"
-            size="lg"
-            className="bg-white text-travel-blue hover:bg-white/90"
-          >
-            Connect Calendar
-          </Button>
+      {/* Calendar Integration Section */}
+      <section className="py-20 px-4 bg-gradient-subtle">
+        <div className="container mx-auto">
+          <div className="text-center mb-16">
+            <h2 className="text-4xl font-bold mb-4">
+              Connect Your Calendar
+            </h2>
+            <p className="text-xl text-muted-foreground">
+              Sync your travel plans automatically and never miss important travel updates
+            </p>
+          </div>
+          <div className="max-w-2xl mx-auto">
+            <CalendarIntegration />
+          </div>
         </div>
       </section>
     </div>

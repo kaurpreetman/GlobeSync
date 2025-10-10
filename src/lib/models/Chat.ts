@@ -13,7 +13,8 @@ export interface IChat extends Document {
   title: string;
   messages: IMessage[];
   basic_info?: Record<string, any>;
-  route_data?: Record<string, any>; // ✅ Add this
+  route_data?: Record<string, any>;
+  tool_data?: Record<string, any>; // For storing budget, weather, transportation, calendar data
   map_center?: [number, number];
   createdAt?: Date;
   updatedAt?: Date;
@@ -35,7 +36,8 @@ const chatSchema = new Schema<IChat>(
     title: { type: String, required: true },
     messages: [messageSchema],
     basic_info: { type: Object },
-    route_data: { type: Object, default: {} }, // ✅ Add this
+    route_data: { type: Object, default: {} },
+    tool_data: { type: Object, default: {} }, // Store budget, weather, transport, calendar data
     map_center: { type: [Number], default: [0, 0] },
   },
   { timestamps: true }

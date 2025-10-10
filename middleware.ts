@@ -11,7 +11,7 @@ export const config = {
     "/explore/:path*",   // protect all explore routes
     "/compare/:path*",   // protect compare page
     "/dashboard/:path*", // protect dashboard
-    "/planning/:path*",  // protect planning page for consistency
+    "/planning/:path*",  // protect planning page
     "/trips/:path*",     // protect trips page
   ],
 };

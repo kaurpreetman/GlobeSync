@@ -10,6 +10,8 @@ import { Badge } from "@/components/ui/badge";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import ProtectedRoute from "@/components/ProtectedRoute";
 import ChatInterface from "@/components/dashboard/ChatInterface";
+import CalendarStatusWidget from "@/components/dashboard/CalendarStatusWidget";
+import FloatingToolIcons from "@/components/dashboard/FloatingToolIcons";
 import dynamic from "next/dynamic";
 import { formatDetailedDate } from "@/lib/utils/dateUtils";
 
@@ -160,15 +162,35 @@ export default function TripDetailPage() {
         setMessages((prev) => {
           const exists = prev.some((m) => m.content === data.message && m.role === "assistant");
           if (exists) return prev;
+          
+          const assistantMessage = {
+            id: Date.now().toString(),
+            role: "assistant",
+            content: data.message,
+            timestamp: new Date(),
+            suggested_responses: data.suggested_responses || [],
+          };
+          
+          // Store assistant message in database
+          if (session?.user?.id) {
+            fetch('/api/chat/store-assistant-message', {
+              method: 'POST',
+              headers: {
+                'Content-Type': 'application/json',
+              },
+              body: JSON.stringify({
+                chatId: tripId,
+                message: assistantMessage,
+                userId: session.user.id
+              })
+            }).catch(error => {
+              console.warn('Failed to store assistant message:', error);
+            });
+          }
+          
           return [
             ...prev,
-            {
-              id: Date.now().toString(),
-              role: "assistant",
-              content: data.message,
-              timestamp: new Date(),
-              suggested_responses: data.suggested_responses || [],
-            },
+            assistantMessage
           ];
         });
 
@@ -313,12 +335,17 @@ export default function TripDetailPage() {
               </div>
             </div>
 
-            <Button
-              onClick={createNewChat}
-              className="bg-gradient-to-r from-blue-600 to-indigo-600 hover:from-blue-700 hover:to-indigo-700"
-            >
-              New Trip
-            </Button>
+            <div className="flex items-center gap-3">
+              <div className="w-48 relative z-50">
+                <CalendarStatusWidget tripId={tripId} />
+              </div>
+              <Button
+                onClick={createNewChat}
+                className="bg-gradient-to-r from-blue-600 to-indigo-600 hover:from-blue-700 hover:to-indigo-700"
+              >
+                New Trip
+              </Button>
+            </div>
           </div>
         </motion.div>
 {/* 
@@ -438,6 +465,15 @@ export default function TripDetailPage() {
             />
           </motion.div>
         </div>
+        
+        {/* Floating Tool Icons */}
+        <FloatingToolIcons
+          tripContext={tripData?.basic_info}
+          sessionId={tripId}
+          onToolResult={(toolType, result) => {
+            console.log(`Trip detail tool ${toolType} result:`, result);
+          }}
+        />
       </div>
     </ProtectedRoute>
   );

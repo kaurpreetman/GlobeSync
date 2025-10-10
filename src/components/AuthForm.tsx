@@ -1,7 +1,7 @@
 "use client";
 
 import React, { useState } from "react";
-import { signIn } from "next-auth/react";
+import { signIn, useSession } from "next-auth/react";
 import { Eye, EyeOff, User, Mail, Lock } from "lucide-react";
 
 interface FormData {
@@ -13,6 +13,7 @@ interface FormData {
 }
 
 const AuthForm: React.FC<{ onSuccess?: () => void }> = ({ onSuccess }) => {
+  const { update: updateSession } = useSession();
   const [isLogin, setIsLogin] = useState(true);
   const [showPassword, setShowPassword] = useState(false);
   const [loading, setLoading] = useState(false);
@@ -106,9 +107,13 @@ const AuthForm: React.FC<{ onSuccess?: () => void }> = ({ onSuccess }) => {
       });
       if (res?.error) {
         setError(res.error);
-      } else {
-        // Wait for session to update and then call success callback
-        setTimeout(() => onSuccess?.(), 100);
+      } else if (res?.ok) {
+        // Update session immediately to trigger re-render
+        await updateSession();
+        // Small delay to ensure session is updated
+        setTimeout(() => {
+          onSuccess?.();
+        }, 500);
       }
     } catch (err: any) {
       setError(err.message || "Login failed");

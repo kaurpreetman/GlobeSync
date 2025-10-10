@@ -12,9 +12,8 @@ function AuthPageContent() {
   return (
     <AuthForm
       onSuccess={() => {
-        // Force a router refresh to update session state immediately
-        router.refresh();
-        router.push(callbackUrl);
+        // Redirect to callback URL - session should already be updated
+        window.location.href = callbackUrl;
       }}
     />
   );
