@@ -3,7 +3,7 @@ import httpx
 import json
 import re, logging
 from datetime import datetime, timedelta
-from duckduckgo_search import DDGS
+from ddgs import DDGS
 from langchain_google_genai import ChatGoogleGenerativeAI
 
 # Configure logging
@@ -580,7 +580,6 @@ class EventsTool:
                                 categories: List[str] = None) -> List[Dict[str, Any]]:
         """Search for events using DuckDuckGo"""
         try:
-            from duckduckgo_search import DDGS
             import re
             
             # Create search queries for different types of events
@@ -682,9 +681,9 @@ class EventsTool:
                         "end_time": "YYYY-MM-DDTHH:MM:SS",
                         "category": "entertainment|sightseeing|cultural|sports|food|general",
                         "price": 25.00,
-                        "booking_url": "url_if_available",
-                        "venue_name": "Venue Name",
-                        "venue_address": "Venue Address"
+                        "booking_url": "the URL from search results where users can find more info or book tickets",
+                        "venue_name": "Venue Name or Location",
+                        "venue_address": "Full venue address or general area in {location}"
                     }}
                 ]
             }}
@@ -694,10 +693,13 @@ class EventsTool:
             - Only include events within the date range {start_date.strftime('%Y-%m-%d')} to {end_date.strftime('%Y-%m-%d')}
             - If exact dates aren't clear, make reasonable estimates within the date range
             - If price isn't mentioned, use null
+            - **IMPORTANT: For booking_url, use the actual URL from the search result where the event information was found. This should be a clickable link users can visit.**
+            - If venue details are unclear, use "{location}" as the venue_name and venue_address
             - If end time isn't clear, estimate based on event type (concerts: 3-4 hours, tours: 2-3 hours, etc.)
-            - Generate unique IDs using event name and venue
+            - Generate unique IDs using event name and date
             - Focus on actual events, not general listings or advertisements
             - Categorize events appropriately
+            - Extract at least 3-5 events if the search results contain relevant information
             """
             
             # Call Gemini
@@ -722,11 +724,16 @@ class EventsTool:
                         start_time = datetime.fromisoformat(event_info["start_time"])
                         end_time = datetime.fromisoformat(event_info["end_time"])
                         
+                        # Get venue address, ensure it's a string (not None)
+                        venue_address = event_info.get("venue_address") or event_info.get("venue_name") or location
+                        if not venue_address:
+                            venue_address = f"{location} (Venue TBD)"
+                        
                         # Create location object (simplified without coordinates)
                         event_location = Location(
                             lat=0.0,  # Default coordinates since we're not using them
                             lng=0.0,
-                            address=event_info.get("venue_address", location),
+                            address=venue_address,
                             city=location.split(",")[0].strip(),
                             country=location.split(",")[-1].strip() if "," in location else "Unknown"
                         )
@@ -747,7 +754,8 @@ class EventsTool:
                         events.append(event)
                         
                     except (ValueError, KeyError) as e:
-                        print(f"Error parsing event: {e}")
+                        logger.error(f"Error parsing event: {e}", exc_info=True)
+                        logger.error(f"Event info: {event_info}")
                         continue
                 
                 return events
@@ -767,18 +775,26 @@ class EventsTool:
             if not settings.GEMINI_API_KEY:
                 raise Exception("Gemini API key is required. Please set GEMINI_API_KEY in your environment.")
             
+            logger.info(f"Finding events in {location} from {start_date} to {end_date}")
+            
             # Search the web for events
             search_results = await self._search_events_web(location, start_date, end_date, categories)
             
+            logger.info(f"Found {len(search_results)} search results")
+            
             if not search_results:
+                logger.warning("No search results found for events")
                 return []  # No search results found
             
             # Extract structured event data using Gemini
             events = await self._extract_events_with_gemini(search_results, location, start_date, end_date, categories)
             
+            logger.info(f"Extracted {len(events)} events from search results")
+            
             return events
                 
         except Exception as e:
+            logger.error(f"Events search error: {str(e)}", exc_info=True)
             raise Exception(f"Events search error: {str(e)}")
 
 class BudgetTool:
@@ -929,101 +945,212 @@ class BudgetTool:
             raise Exception(f"Budget optimization error: {str(e)}")
 
 class AccommodationTool:
-    """Tool for finding accommodations using real booking APIs"""
+    """Tool for finding accommodations using web search and AI extraction"""
+    
+    def __init__(self):
+        self.llm = ChatGoogleGenerativeAI(
+            model=settings.GEMINI_MODEL,
+            google_api_key=settings.GEMINI_API_KEY,
+            temperature=0.3
+        )
+    
+    async def _search_accommodations_web(self, location: str, check_in: datetime, 
+                                        check_out: datetime, budget_level: str = "Mid") -> List[Dict[str, Any]]:
+        """Search for accommodations using DuckDuckGo"""
+        try:
+            import re
+            
+            # Create search queries for different types of accommodations
+            base_queries = [
+                f"hotels in {location} booking.com",
+                f"best hotels {location} {check_in.strftime('%B %Y')}",
+                f"accommodation {location} hotels.com airbnb",
+                f"where to stay in {location}"
+            ]
+            
+            all_results = []
+            
+            # DDGS search function
+            def search_sync(query):
+                try:
+                    with DDGS() as ddgs:
+                        return list(ddgs.text(query, max_results=8))
+                except Exception as e:
+                    logger.error(f"Search error for query '{query}': {e}", exc_info=True)
+                    return []
+            
+            for query in base_queries[:2]:  # Limit to 2 queries
+                try:
+                    import asyncio
+                    results = await asyncio.get_event_loop().run_in_executor(None, search_sync, query)
+                    
+                    for result in results:
+                        cleaned_result = {
+                            "title": result.get("title", ""),
+                            "body": result.get("body", ""),
+                            "url": result.get("href", ""),
+                            "source_query": query
+                        }
+                        
+                        # Filter for accommodation-related results
+                        if any(keyword in cleaned_result["title"].lower() or keyword in cleaned_result["body"].lower() 
+                              for keyword in ["hotel", "accommodation", "stay", "booking", "airbnb", "hostel", "resort", "inn"]):
+                            all_results.append(cleaned_result)
+                    
+                except Exception as search_error:
+                    logger.error(f"Search error for query '{query}': {search_error}")
+                    continue
+            
+            logger.info(f"Found {len(all_results)} accommodation search results")
+            return all_results[:15]
+            
+        except Exception as e:
+            logger.error(f"Web search error: {str(e)}", exc_info=True)
+            raise Exception(f"Web search error: {str(e)}")
+    
+    async def _extract_accommodations_with_gemini(self, search_results: List[Dict[str, Any]], 
+                                                  location: str, check_in: datetime, 
+                                                  check_out: datetime, budget_per_night: float) -> List[Dict[str, Any]]:
+        """Use Gemini to extract structured accommodation data from search results"""
+        try:
+            if not settings.GEMINI_API_KEY:
+                raise Exception("Gemini API key is required")
+            
+            # Prepare search results for Gemini
+            search_text = ""
+            for i, result in enumerate(search_results):
+                search_text += f"\n--- Search Result {i+1} ---\n"
+                search_text += f"Title: {result['title']}\n"
+                search_text += f"Content: {result['body']}\n"
+                search_text += f"URL: {result['url']}\n"
+            
+            nights = (check_out - check_in).days
+            
+            prompt = f"""
+            Analyze the following search results and extract structured accommodation information for {location}.
+            
+            Check-in: {check_in.strftime('%Y-%m-%d')}
+            Check-out: {check_out.strftime('%Y-%m-%d')}
+            Nights: {nights}
+            Budget per night: ${budget_per_night}
+
+            Search Results:
+            {search_text}
+
+            Extract accommodations and return them in this exact JSON format (return only valid JSON, no additional text):
+            {{
+                "accommodations": [
+                    {{
+                        "id": "unique_id",
+                        "name": "Hotel/Accommodation Name",
+                        "type": "hotel|hostel|apartment|resort|guesthouse",
+                        "price_per_night": 100.00,
+                        "rating": 4.5,
+                        "amenities": ["wifi", "pool", "breakfast", "gym"],
+                        "location": "{location}",
+                        "booking_url": "URL from search results",
+                        "description": "Brief description"
+                    }}
+                ]
+            }}
+
+            Guidelines:
+            - Extract actual hotel/accommodation names from the search results
+            - Use the actual URLs from search results as booking_url
+            - If price isn't mentioned, estimate based on accommodation type and location
+            - Include both options within budget and slightly above (up to 30% more)
+            - Rating should be realistic (3.0-5.0 range)
+            - Common amenities: wifi, pool, spa, gym, breakfast, parking, restaurant, room_service
+            - Extract at least 5-8 options if search results have enough information
+            - Prioritize results from booking.com, hotels.com, airbnb.com, or official hotel sites
+            """
+            
+            response = await self.llm.ainvoke(prompt)
+            
+            # Parse JSON response
+            import json
+            try:
+                response_text = response.content.strip()
+                if "```json" in response_text:
+                    response_text = response_text.split("```json")[1].split("```")[0].strip()
+                elif "```" in response_text:
+                    response_text = response_text.split("```")[1].strip()
+                
+                data = json.loads(response_text)
+                
+                accommodations = []
+                for acc in data.get("accommodations", []):
+                    try:
+                        # Ensure required fields exist
+                        accommodation = {
+                            "id": acc.get("id", f"acc_{len(accommodations)}"),
+                            "name": acc.get("name", f"Accommodation in {location}"),
+                            "type": acc.get("type", "hotel"),
+                            "price_per_night": float(acc.get("price_per_night", budget_per_night)),
+                            "total_cost": float(acc.get("price_per_night", budget_per_night)) * nights,
+                            "rating": float(acc.get("rating", 4.0)),
+                            "amenities": acc.get("amenities", ["wifi"]),
+                            "location": location,
+                            "booking_url": acc.get("booking_url", ""),
+                            "description": acc.get("description", ""),
+                            "check_in": check_in.isoformat(),
+                            "check_out": check_out.isoformat(),
+                            "nights": nights,
+                            "within_budget": float(acc.get("price_per_night", budget_per_night)) <= budget_per_night
+                        }
+                        accommodations.append(accommodation)
+                    except (ValueError, KeyError) as e:
+                        logger.error(f"Error parsing accommodation: {e}")
+                        continue
+                
+                return accommodations
+                
+            except json.JSONDecodeError as e:
+                logger.error(f"JSON parsing error: {e}")
+                logger.error(f"Response text: {response_text}")
+                return []
+                
+        except Exception as e:
+            logger.error(f"Gemini extraction error: {str(e)}", exc_info=True)
+            raise Exception(f"Gemini extraction error: {str(e)}")
     
     async def _get_location_details(self, location: str) -> Dict[str, Any]:
         """Get location details for accommodation search (simplified without coordinates)"""
         return {
-            "latitude": 0.0,  # Default coordinates since we're not using them
+            "latitude": 0.0,
             "longitude": 0.0,
             "city": location.split(",")[0].strip()
         }
     
     async def find_accommodations(self, location: str, check_in: datetime, 
                                 check_out: datetime, budget_per_night: float) -> List[Dict[str, Any]]:
-        """Find accommodation options within budget using booking APIs"""
+        """Find accommodation options using web search and AI extraction"""
         try:
-            # This would typically use Booking.com API, Airbnb API, etc.
-            # For now, we'll use a realistic estimation system
+            if not settings.GEMINI_API_KEY:
+                raise Exception("Gemini API key is required")
             
-            location_details = await self._get_location_details(location)
             nights = (check_out - check_in).days
             
             if nights <= 0:
                 raise Exception("Check-out date must be after check-in date")
             
-            # Generate realistic accommodation options based on location and budget
-            accommodations = []
+            logger.info(f"Searching accommodations in {location}, budget: ${budget_per_night}/night")
             
-            # Base pricing by location type
-            location_lower = location.lower()
-            price_multiplier = 1.0
+            # Search the web for accommodations
+            search_results = await self._search_accommodations_web(location, check_in, check_out)
             
-            if any(city in location_lower for city in ["tokyo", "paris", "london", "new york", "singapore"]):
-                price_multiplier = 2.0  # High-cost cities
-            elif any(city in location_lower for city in ["bangkok", "prague", "budapest", "lisbon", "mexico city"]):
-                price_multiplier = 0.6  # Lower-cost cities
+            if not search_results:
+                logger.warning("No search results found for accommodations")
+                return []
             
-            # Generate accommodation options within and around budget
-            base_prices = [
-                {"type": "luxury_hotel", "base": 200, "rating": 5},
-                {"type": "boutique_hotel", "base": 120, "rating": 4.5},
-                {"type": "mid_range_hotel", "base": 80, "rating": 4},
-                {"type": "budget_hotel", "base": 50, "rating": 3},
-                {"type": "hostel", "base": 25, "rating": 2.5},
-                {"type": "apartment", "base": 90, "rating": 4.2},
-                {"type": "guesthouse", "base": 60, "rating": 3.8}
-            ]
+            # Extract structured accommodation data using Gemini
+            accommodations = await self._extract_accommodations_with_gemini(
+                search_results, location, check_in, check_out, budget_per_night
+            )
             
-            accommodation_id = 1
-            for accommodation_type in base_prices:
-                price_per_night = accommodation_type["base"] * price_multiplier
-                
-                # Include accommodations within reasonable range of budget
-                if price_per_night <= budget_per_night * 1.3:  # Up to 30% over budget
-                    
-                    # Define amenities based on accommodation type
-                    amenities = ["wifi"]
-                    if accommodation_type["type"] in ["luxury_hotel", "boutique_hotel"]:
-                        amenities.extend(["pool", "spa", "gym", "breakfast", "concierge", "room_service"])
-                    elif accommodation_type["type"] in ["mid_range_hotel", "apartment"]:
-                        amenities.extend(["breakfast", "gym", "kitchen" if "apartment" in accommodation_type["type"] else "restaurant"])
-                    elif accommodation_type["type"] == "budget_hotel":
-                        amenities.extend(["breakfast"])
-                    elif accommodation_type["type"] == "hostel":
-                        amenities.extend(["shared_kitchen", "common_area", "laundry"])
-                    elif accommodation_type["type"] == "guesthouse":
-                        amenities.extend(["breakfast", "garden"])
-                    
-                    # Check availability (simplified - in real implementation, this would query actual APIs)
-                    availability = True
-                    if check_in < datetime.now() + timedelta(days=2):
-                        availability = price_per_night < budget_per_night  # Last-minute bookings more limited
-                    
-                    accommodations.append({
-                        "id": f"accommodation_{accommodation_id}",
-                        "name": f"{location_details['city']} {accommodation_type['type'].replace('_', ' ').title()} #{accommodation_id}",
-                        "type": accommodation_type["type"],
-                        "price_per_night": round(price_per_night, 2),
-                        "total_cost": round(price_per_night * nights, 2),
-                        "rating": accommodation_type["rating"],
-                        "amenities": amenities,
-                        "location": location,
-                        "coordinates": {
-                            "latitude": location_details["latitude"],
-                            "longitude": location_details["longitude"]
-                        },
-                        "availability": availability,
-                        "check_in": check_in.isoformat(),
-                        "check_out": check_out.isoformat(),
-                        "nights": nights,
-                        "within_budget": price_per_night <= budget_per_night,
-                        "distance_to_center": f"{round(abs(hash(accommodation_type['type']) % 10), 1)} km"  # Simulated distance
-                    })
-                    
-                    accommodation_id += 1
+            logger.info(f"Extracted {len(accommodations)} accommodations")
             
-            # Sort by price (ascending) and then by rating (descending)
+            # Sort by price and rating
             accommodations.sort(key=lambda x: (x["price_per_night"], -x["rating"]))
             
             return accommodations
