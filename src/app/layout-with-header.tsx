@@ -1,5 +1,5 @@
+"use client";
 import Header from "@/components/Layout/Header";
-
 
 export default function LayoutWithHeader({
   children,
@@ -7,13 +7,9 @@ export default function LayoutWithHeader({
   children: React.ReactNode;
 }) {
   return (
-     
-        <div className="min-h-screen bg-background">
-        
+    <div className="min-h-screen bg-background">
       <Header />
       <main>{children}</main>
-   
     </div>
-      
   );
 }

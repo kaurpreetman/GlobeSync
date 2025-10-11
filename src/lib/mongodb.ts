@@ -11,6 +11,11 @@ async function connectDb() {
   if (cached.conn) return cached.conn;
 
   if (!cached.promise) {
+    // Clear all cached models to ensure schema changes are picked up
+    Object.keys(mongoose.models).forEach(modelName => {
+      delete mongoose.models[modelName];
+    });
+    
     cached.promise = mongoose.connect(MONGO_URI).then((mongoose) => mongoose);
   }
   cached.conn = await cached.promise;

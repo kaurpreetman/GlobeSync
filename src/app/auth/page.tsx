@@ -1,11 +1,28 @@
-// src/app/auth/page.tsx
 "use client";
 
-import { useRouter } from "next/navigation";
+import { useRouter, useSearchParams } from "next/navigation";
+import { Suspense } from "react";
 import AuthForm from "@/components/AuthForm";
 
-export default function AuthPage() {
+function AuthPageContent() {
   const router = useRouter();
+  const searchParams = useSearchParams();
+  const callbackUrl = searchParams.get("callbackUrl") || "/";
 
-  return <AuthForm onSuccess={() => router.push("/")} />;
+  return (
+    <AuthForm
+      onSuccess={() => {
+        // Redirect to callback URL - session should already be updated
+        window.location.href = callbackUrl;
+      }}
+    />
+  );
+}
+
+export default function AuthPage() {
+  return (
+    <Suspense fallback={<div>Loading...</div>}>
+      <AuthPageContent />
+    </Suspense>
+  );
 }

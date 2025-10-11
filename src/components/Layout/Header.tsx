@@ -14,7 +14,7 @@ const Header = () => {
   const navItems = [
     { name: "Home", path: "/" },
     { name: "Explore", path: "/explore", protected: true },
-    { name: "Trips", path: "/trips", protected: true },
+    { name: "My Trips", path: "/trips", protected: true },
     { name: "Dashboard", path: "/dashboard", protected: true },
   ];
 

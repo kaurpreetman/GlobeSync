@@ -1,7 +1,7 @@
 "use client";
 
 import React, { useState } from "react";
-import { signIn } from "next-auth/react";
+import { signIn, useSession } from "next-auth/react";
 import { Eye, EyeOff, User, Mail, Lock } from "lucide-react";
 
 interface FormData {
@@ -13,6 +13,7 @@ interface FormData {
 }
 
 const AuthForm: React.FC<{ onSuccess?: () => void }> = ({ onSuccess }) => {
+  const { update: updateSession } = useSession();
   const [isLogin, setIsLogin] = useState(true);
   const [showPassword, setShowPassword] = useState(false);
   const [loading, setLoading] = useState(false);
@@ -104,8 +105,16 @@ const AuthForm: React.FC<{ onSuccess?: () => void }> = ({ onSuccess }) => {
         email: form.email,
         password: form.password,
       });
-      if (res?.error) setError(res.error);
-      else onSuccess?.();
+      if (res?.error) {
+        setError(res.error);
+      } else if (res?.ok) {
+        // Update session immediately to trigger re-render
+        await updateSession();
+        // Small delay to ensure session is updated
+        setTimeout(() => {
+          onSuccess?.();
+        }, 500);
+      }
     } catch (err: any) {
       setError(err.message || "Login failed");
     } finally {
@@ -117,7 +126,11 @@ const AuthForm: React.FC<{ onSuccess?: () => void }> = ({ onSuccess }) => {
   const handleGoogle = async () => {
     setLoading(true);
     try {
-      await signIn("google", { callbackUrl: "/" });
+      // Get callback URL from current page URL params if available
+      const urlParams = new URLSearchParams(window.location.search);
+      const callbackUrl = urlParams.get("callbackUrl") || "/";
+      
+      await signIn("google", { callbackUrl });
     } catch (err: any) {
       setError(err.message || "Google authentication failed");
     } finally {

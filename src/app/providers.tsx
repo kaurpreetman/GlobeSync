@@ -5,7 +5,11 @@ import { ReactQueryProvider } from "./providers/react-query-provider";
 
 export default function Providers({ children }: { children: React.ReactNode }) {
   return (
-    <SessionProvider>
+    <SessionProvider 
+      refetchInterval={5 * 60} // Refetch session every 5 minutes
+      refetchOnWindowFocus={true}
+      refetchWhenOffline={false}
+    >
       <ReactQueryProvider>{children}</ReactQueryProvider>
     </SessionProvider>
   );

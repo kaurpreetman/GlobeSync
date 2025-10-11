@@ -2,12 +2,13 @@
 
 import { Button } from "@/components/ui/button";
 import { ArrowRight } from "lucide-react";
-import Link from "next/link";
 import { useRouter, useSearchParams } from "next/navigation";
-import DestinationCard from "@/components/Cards/DestinationCard";
-import FeatureCard from "@/components/Cards/FeatureCard";
+import { useSession } from "next-auth/react";
 import { useEffect, useState } from "react";
 import { useToast } from "@/hooks/use-toast";
+import DestinationCard from "@/components/Cards/DestinationCard";
+import FeatureCard from "@/components/Cards/FeatureCard";
+import CalendarIntegration from "@/components/calendar/CalendarIntegration";
 
 import parisImage from "@/assets/paris.jpg";
 import tokyoImage from "@/assets/tokyo.jpg";
@@ -21,6 +22,7 @@ export default function Home() {
   const router = useRouter();
   const searchParams = useSearchParams();
   const { toast } = useToast();
+  const { data: session } = useSession();
   const [calendarConnected, setCalendarConnected] = useState(false);
   const [isConnecting, setIsConnecting] = useState(false);
 
@@ -173,13 +175,17 @@ export default function Home() {
           </p>
 
           <div className="flex flex-col sm:flex-row gap-4 justify-center">
-            <Button asChild variant="travel" size="lg">
-              <Link href="/explore">
-                Start Planning
-                <ArrowRight className="ml-2 h-4 w-4" />
-              </Link>
+            <Button
+              variant="travel"
+              size="lg"
+              onClick={() => {
+                if (session) router.push("/explore");
+                else router.push(`/auth?callbackUrl=${encodeURIComponent("/explore")}`);
+              }}
+            >
+              Start Planning
+              <ArrowRight className="ml-2 h-4 w-4" />
             </Button>
-            
           </div>
         </div>
       </section>

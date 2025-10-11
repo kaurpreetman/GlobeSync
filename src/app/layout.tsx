@@ -1,3 +1,4 @@
+
 import "./globals.css";
 import type { Metadata } from "next";
 import { Inter } from "next/font/google";
@@ -23,6 +24,7 @@ export default function RootLayout({
   return (
     <html lang="en">
       <body className={inter.className}>
+        
         <Providers>
           <TooltipProvider>
             <Toaster />
@@ -30,6 +32,7 @@ export default function RootLayout({
             <LayoutWithHeader>{children}</LayoutWithHeader>
           </TooltipProvider>
         </Providers>
+   
       </body>
     </html>
   );
