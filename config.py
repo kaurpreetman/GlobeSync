@@ -19,8 +19,8 @@ class Settings:
     GOOGLE_CALENDAR_SCOPES: List[str] = ["https://www.googleapis.com/auth/calendar"]
     
     # RapidAPI Configuration (for IRCTC trains)
-    RAPIDAPI_KEY: str = os.getenv("x-rapidapi-key", "")
-    IRCTC_API_HOST: str = os.getenv("x-rapidapi-host", "irctc1.p.rapidapi.com")
+    RAPIDAPI_KEY: str = os.getenv("RAPIDAPI_KEY", "")
+    IRCTC_API_HOST: str = os.getenv("IRCTC_API_HOST", "irctc1.p.rapidapi.com")
     
     # Amadeus API Configuration (for flights)
     AMADEUS_API_KEY: str = os.getenv("AMADEUS_API_KEY", "")

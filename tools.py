@@ -1725,20 +1725,14 @@ class IRCTCTrainsTool:
             return await self._get_train_fallback_data(from_station_code, to_station_code)
     
     async def _get_train_fallback_data(self, from_station_code: str, to_station_code: str) -> Dict[str, Any]:
-        """Return API unavailable error when IRCTC API fails"""
+        """Return empty data when IRCTC API fails"""
         logger.error(f"IRCTC API unavailable for {from_station_code} → {to_station_code}")
         return {
             "status": False,
             "data": [],
-            "message": "IRCTC API is currently unavailable. Please try again later or use the official IRCTC website/app.",
+            "message": "Train information not available",
             "error": "api_unavailable",
-            "fallback": True,
-            "suggestions": [
-                "Try again in a few minutes",
-                "Use official IRCTC website: irctc.co.in",
-                "Use IRCTC Connect mobile app",
-                "Check train schedules on railway inquiry websites"
-            ]
+            "fallback": True
         }
     
     async def search_trains_between_cities(self, origin: str, destination: str, travel_date: datetime = None) -> List[Dict[str, Any]]:
