@@ -813,8 +813,8 @@ class BudgetTool:
             distance_km = route.distance
             
             # Rough flight pricing based on distance
-            base_cost_per_km = 0.15  # USD per km
-            flight_cost = max(distance_km * base_cost_per_km, 100)  # Minimum $100
+            base_cost_per_km = 12.5  # INR per km (approx ₹12.5/km for flights in India)
+            flight_cost = max(distance_km * base_cost_per_km, 8300)  # Minimum ₹8300
             
             return [
                 {
@@ -1043,7 +1043,7 @@ class AccommodationTool:
             Check-in: {check_in.strftime('%Y-%m-%d')}
             Check-out: {check_out.strftime('%Y-%m-%d')}
             Nights: {nights}
-            Budget per night: ${budget_per_night}
+            Budget per night: ₹{budget_per_night}
 
             Search Results:
             {search_text}
@@ -1176,7 +1176,7 @@ class AccommodationTool:
             if nights <= 0:
                 raise Exception("Check-out date must be after check-in date")
             
-            logger.info(f"Searching accommodations in {location}, budget: ${budget_per_night}/night")
+            logger.info(f"Searching accommodations in {location}, budget: ₹{budget_per_night}/night")
             
             # Search the web for accommodations
             search_results = await self._search_accommodations_web(location, check_in, check_out)
@@ -2329,7 +2329,7 @@ class AmadeusFlightsTool:
                             "stops": len(segments) - 1,
                             "price": {
                                 "total": price.get("total", "N/A"),
-                                "currency": price.get("currency", "USD"),
+                                "currency": price.get("currency", "INR"),
                                 "base": price.get("base", "N/A")
                             },
                             "aircraft": first_segment.get("aircraft", {}).get("code", "N/A"),

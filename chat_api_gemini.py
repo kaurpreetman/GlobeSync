@@ -487,22 +487,22 @@ Respond with either:
                 
                 # Get budget preference from params or use default
                 budget_str = params.get('budget', 'Mid') if params else 'Mid'
-                # Convert budget level to price per night
+                # Convert budget level to price per night in INR (Indian Rupees)
                 budget_map = {
-                    'Low': 50.0,
-                    'low': 50.0,
-                    'Mid': 100.0,
-                    'mid': 100.0,
-                    'Medium': 100.0,
-                    'medium': 100.0,
-                    'High': 200.0,
-                    'high': 200.0,
-                    'Luxury': 300.0,
-                    'luxury': 300.0
+                    'Low': 3000.0,     # ~₹3000/night (budget hotels)
+                    'low': 3000.0,
+                    'Mid': 6000.0,     # ~₹6000/night (mid-range hotels)
+                    'mid': 6000.0,
+                    'Medium': 6000.0,
+                    'medium': 6000.0,
+                    'High': 12000.0,   # ~₹12000/night (premium hotels)
+                    'high': 12000.0,
+                    'Luxury': 20000.0, # ~₹20000/night (luxury hotels)
+                    'luxury': 20000.0
                 }
-                budget_per_night = budget_map.get(budget_str, 100.0)
+                budget_per_night = budget_map.get(budget_str, 6000.0)
                 
-                logger.info(f"Searching accommodations in {location} from {check_in_date} to {check_out_date}, budget: ${budget_per_night}/night")
+                logger.info(f"Searching accommodations in {location} from {check_in_date} to {check_out_date}, budget: ₹{budget_per_night}/night")
                 
                 try:
                     accommodation_data = await self.tools["accommodation"].find_accommodations(
