@@ -26,9 +26,20 @@ export async function POST(request: NextRequest) {
     }
 
     // Check if user owns this chat (assuming chat has userId field or user reference)
-    if (chat.user?.toString() !== userId) {
+    const chatUserId = chat.user?.toString();
+    console.log(`Authorization check - Chat user: ${chatUserId}, Request user: ${userId}`);
+    
+    if (chatUserId !== userId) {
+      console.error(`Authorization failed: chat.user (${chatUserId}) !== userId (${userId})`);
       return NextResponse.json(
-        { error: 'Unauthorized' },
+        { 
+          error: 'Unauthorized',
+          debug: {
+            chatUserId,
+            requestUserId: userId,
+            chatId
+          }
+        },
         { status: 403 }
       );
     }

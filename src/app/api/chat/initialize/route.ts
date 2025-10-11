@@ -1,7 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import connectDb from "@/lib/mongodb";
 import Chat from "@/lib/models/Chat";
-import mongoose from "mongoose";
 import { getCityCoordinates } from "@/lib/geocoding";
 
 export async function POST(req: NextRequest) {
@@ -26,14 +25,9 @@ export async function POST(req: NextRequest) {
     
     console.log(`Coordinates for ${basic_info.city}:`, coordinates);
 
-    // Convert userId to ObjectId if it's not already
-    const userObjectId = mongoose.Types.ObjectId.isValid(userId) 
-      ? new mongoose.Types.ObjectId(userId) 
-      : new mongoose.Types.ObjectId();
-
-    // Create a new chat session in MongoDB
+    // Create a new chat session in MongoDB with userId as string (for OAuth compatibility)
     const chat = await Chat.create({
-      user: userObjectId,
+      user: userId,  // Use string directly - no ObjectId conversion
       title: `Trip to ${basic_info.city}`,
       basic_info: basic_info,
       messages: [],

@@ -9,7 +9,7 @@ export interface IMessage {
 }
 
 export interface IChat extends Document {
-  user: mongoose.Types.ObjectId;
+  user: string; // Changed from ObjectId to string for OAuth user IDs
   title: string;
   messages: IMessage[];
   basic_info?: Record<string, any>;
@@ -32,7 +32,7 @@ const messageSchema = new Schema<IMessage>(
 
 const chatSchema = new Schema<IChat>(
   {
-    user: { type: Schema.Types.ObjectId, ref: "User", required: true },
+    user: { type: String, required: true, index: true }, // Changed from ObjectId to String for OAuth user IDs
     title: { type: String, required: true },
     messages: [messageSchema],
     basic_info: { type: Object },
@@ -43,5 +43,12 @@ const chatSchema = new Schema<IChat>(
   { timestamps: true }
 );
 
-const Chat: Model<IChat> = models.Chat || model<IChat>("Chat", chatSchema);
+// Aggressive cache clearing to ensure schema changes are applied
+try {
+  mongoose.deleteModel('Chat');
+} catch (e) {
+  // Model doesn't exist yet, that's fine
+}
+
+const Chat: Model<IChat> = model<IChat>("Chat", chatSchema);
 export default Chat;

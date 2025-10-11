@@ -15,7 +15,7 @@ export async function GET(req: NextRequest) {
     if (action === 'check') {
       // Check database contents
       const users = await User.find({}, 'name email').lean();
-      const chats = await Chat.find({}).populate('user', 'name email').lean();
+      const chats = await Chat.find({}).lean(); // Removed populate since user is now a string
       
       return NextResponse.json({
         users_count: users.length,
@@ -23,7 +23,7 @@ export async function GET(req: NextRequest) {
         users: users.map(u => ({ id: u._id, name: u.name, email: u.email })),
         chats: chats.map(c => ({
           id: c._id,
-          user: c.user,
+          user: c.user, // This is now a string (OAuth user ID)
           title: c.title,
           basic_info: c.basic_info,
           messages_count: c.messages?.length || 0,

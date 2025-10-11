@@ -184,39 +184,7 @@ export default function TripsPage() {
           )}
           
           {/* Debug Section - Only show if no trips and user is logged in */}
-          {trips.length === 0 && !loading && !error && session?.user?.id && (
-            <div className="bg-blue-50 border border-blue-200 rounded-lg p-4 mb-6">
-              <div className="flex items-center justify-between">
-                <div>
-                  <h3 className="text-blue-800 font-medium mb-1">No trips found</h3>
-                  <p className="text-blue-600 text-sm">This might be because you haven't created any trips yet, or there's a database issue.</p>
-                </div>
-                <div className="flex gap-2">
-                  <Button
-                    variant="outline"
-                    size="sm"
-                    onClick={() => window.open(`/api/debug/trips?action=check`, '_blank')}
-                  >
-                    Check Database
-                  </Button>
-                  <Button
-                    variant="outline"
-                    size="sm"
-                    onClick={() => {
-                      fetch(`/api/debug/trips?action=create&userId=${session.user.id}`)
-                        .then(() => {
-                          alert('Test trips created! Refreshing...');
-                          fetchTrips();
-                        })
-                        .catch(err => alert('Error creating test trips: ' + err.message));
-                    }}
-                  >
-                    Create Test Trips
-                  </Button>
-                </div>
-              </div>
-            </div>
-          )}
+
 
           {/* Empty State */}
           {trips.length === 0 && !error ? (
