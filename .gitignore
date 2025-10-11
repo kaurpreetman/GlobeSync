@@ -27,6 +27,9 @@ share/python-wheels/
 MANIFEST
 credentials.json
 token.json
+tokens/
+*.pickle
+
 # Virtual environments
 .env
 .venv
