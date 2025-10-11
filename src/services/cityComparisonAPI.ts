@@ -365,7 +365,7 @@ function transformBudgetData(budgetData: any, cityName: string, budgetLevel: str
     budgetLevel: budgetLevel as 'low' | 'medium' | 'high',
     daily,
     trip,
-    currency: 'USD',
+    currency: 'INR',
     recommendations: {
       accommodationType: accommodation.type || 'Hotel',
       foodTips: ['Try local cuisine', 'Visit markets', 'Look for lunch specials'],
@@ -534,7 +534,7 @@ function getFallbackBudgetDataSync(city: string, budgetLevel: 'low' | 'medium' |
     budgetLevel,
     daily,
     trip,
-    currency: 'USD',
+    currency: 'INR',
     recommendations: {
       accommodationType: budgetLevel === 'low' ? 'Hostel' : budgetLevel === 'medium' ? 'Hotel' : 'Luxury Hotel',
       foodTips: ['Try local markets', 'Cook when possible', 'Look for lunch specials'],
@@ -618,9 +618,18 @@ function getCityCurrency(city: string): string {
     'berlin': 'EUR',
     'amsterdam': 'EUR',
     'madrid': 'EUR',
-    'new york': 'USD'
+    'new york': 'USD',
+    'delhi': 'INR',
+    'mumbai': 'INR',
+    'bangalore': 'INR',
+    'hyderabad': 'INR',
+    'chennai': 'INR',
+    'kolkata': 'INR',
+    'pune': 'INR',
+    'jaipur': 'INR',
+    'goa': 'INR'
   };
-  return currencies[city.toLowerCase()] || 'USD';
+  return currencies[city.toLowerCase()] || 'INR';  // Default to INR for Indian app
 }
 
 function getCityLanguage(city: string): string {

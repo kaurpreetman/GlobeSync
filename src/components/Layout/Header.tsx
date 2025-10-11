@@ -15,7 +15,6 @@ const Header = () => {
     { name: "Home", path: "/" },
     { name: "Explore", path: "/explore", protected: true },
     { name: "My Trips", path: "/trips", protected: true },
-    { name: "Dashboard", path: "/dashboard", protected: true },
   ];
 
   const handleNavClick = (itemPath: string, isProtected?: boolean) => {

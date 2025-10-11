@@ -11,7 +11,7 @@ import LayoutWithHeader from "./layout-with-header";
 const inter = Inter({ subsets: ["latin"] });
 
 export const metadata: Metadata = {
-  title: "Webster - Smart Travel Planner",
+  title: "GlobeSync - Smart Travel Planner",
   description:
     "AI-powered travel planning with smart itineraries, cost analysis, weather forecasts, and event discovery. Plan your perfect trip with Webster.",
 };
