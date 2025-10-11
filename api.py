@@ -415,10 +415,9 @@ async def get_city_data(city: str, origin: str, travel_date: datetime, return_da
         try:
             print(f"Attempting to fetch real flight data from {origin} to {city}...")
             flights_result = await flights_tool.search_flights(
-                origin=origin,
-                destination=city, 
-                departure_date=travel_date.strftime("%Y-%m-%d"),
-                passengers=passengers
+                origin_city=origin,
+                destination_city=city, 
+                departure_date=travel_date.strftime("%Y-%m-%d")
             )
             
             if flights_result and hasattr(flights_result, 'flights') and flights_result.flights:

@@ -3,7 +3,7 @@ import httpx
 import json
 import re, logging
 from datetime import datetime, timedelta
-from duckduckgo_search import DDGS
+from ddgs import DDGS
 
 from langchain_google_genai import ChatGoogleGenerativeAI
 
@@ -2281,13 +2281,22 @@ class AmadeusFlightsTool:
                 }
                 
                 response = await client.get(url, headers=headers, params=params)
+                
+                # Log response details for debugging
+                if response.status_code != 200:
+                    error_body = response.text
+                    print(f"❌ Amadeus API HTTP {response.status_code}: {error_body}")
+                
                 response.raise_for_status()
                 
                 flight_data = response.json()
                 return flight_data.get("data", [])
                 
+        except httpx.HTTPStatusError as e:
+            print(f"❌ Amadeus Flight Offers Search API HTTP error: {e.response.status_code} - {e.response.text}")
+            return []
         except Exception as e:
-            print(f"❌ Amadeus Flight Offers Search API error: {str(e)}")
+            print(f"❌ Amadeus Flight Offers Search API error: {type(e).__name__}: {str(e)}")
             return []
     
     def _format_flight_offers(self, flight_offers: List[Dict[str, Any]], 
