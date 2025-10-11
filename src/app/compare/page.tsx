@@ -290,6 +290,12 @@ export default function ComparePage() {
                     {city1Data.flights.length > city2Data.flights.length ? city1Data.city : city2Data.city}
                   </Badge>
                 </div>
+                <div className="flex items-center justify-between p-4 bg-purple-50 rounded-lg">
+                  <span className="font-medium text-purple-800">🚆 Train Options</span>
+                  <Badge className="bg-purple-100 text-purple-800">
+                    {city1Data.trains.length > city2Data.trains.length ? city1Data.city : city2Data.city}
+                  </Badge>
+                </div>
               </div>
               <div className="space-y-3">
                 <h4 className="font-semibold text-gray-900">Key Recommendations:</h4>
@@ -578,11 +584,18 @@ export default function ComparePage() {
                     {/* Weather Card */}
                     <WeatherPanel weather={transformWeatherData(comparisonResult.city1Data)} />
                     
-                    {/* Transportation Card */}
+                    {/* Flight Transportation Card */}
                     <TransportationPanel
                       title="Flight Options"
                       data={transformTransportData(comparisonResult.city1Data).flights}
                       type="airport"
+                    />
+                    
+                    {/* Train Transportation Card */}
+                    <TransportationPanel
+                      title="Train Options"
+                      data={transformTransportData(comparisonResult.city1Data).trains}
+                      type="train"
                     />
                   </div>
 
@@ -598,11 +611,18 @@ export default function ComparePage() {
                     {/* Weather Card */}
                     <WeatherPanel weather={transformWeatherData(comparisonResult.city2Data)} />
                     
-                    {/* Transportation Card */}
+                    {/* Flight Transportation Card */}
                     <TransportationPanel
                       title="Flight Options"
                       data={transformTransportData(comparisonResult.city2Data).flights}
                       type="airport"
+                    />
+                    
+                    {/* Train Transportation Card */}
+                    <TransportationPanel
+                      title="Train Options"
+                      data={transformTransportData(comparisonResult.city2Data).trains}
+                      type="train"
                     />
                   </div>
                 </div>
