@@ -10,6 +10,7 @@ import { Button } from '@/components/ui/button';
 export interface TransportData {
   line?: string;       // For trains
   airport?: string;    // For flights
+  airline?: string;    // For flights
   status: string;
   nextTrain?: string;
   destination?: string;
@@ -44,24 +45,23 @@ const TransportationPanel: React.FC<TransportationPanelProps> = ({ title, data, 
   const HeaderIcon = type === 'train' ? Train : Plane;
 
   return (
-    <div className="h-full flex flex-col">
-      <Card className="flex-1 border-0 shadow-lg">
-        <CardHeader className="bg-gradient-to-r from-gray-50 to-gray-100 rounded-t-lg">
-          <CardTitle className="flex items-center">
-            <HeaderIcon className="w-5 h-5 mr-2" />
-            {title}
-          </CardTitle>
-          <CardDescription>Real-time {type} information</CardDescription>
-        </CardHeader>
+    <Card className="border-0 shadow-lg h-fit max-h-[500px]">
+      <CardHeader className="bg-gradient-to-r from-gray-50 to-gray-100 rounded-t-lg pb-4">
+        <CardTitle className="flex items-center text-lg">
+          <HeaderIcon className="w-5 h-5 mr-2" />
+          {title}
+        </CardTitle>
+        <CardDescription>Real-time {type} information</CardDescription>
+      </CardHeader>
 
-        <CardContent className="p-6 space-y-4 flex-1 overflow-y-auto">
+      <CardContent className="p-4 space-y-3 overflow-y-auto max-h-[350px]">
           {data.length === 0 ? (
             <p className="text-gray-500 text-sm">No live data available</p>
           ) : (
             data.map((item, index) => (
               <motion.div
                 key={index}
-                className="p-4 rounded-lg bg-white border border-gray-200 hover:shadow-md transition-all duration-200"
+                className="p-3 rounded-lg bg-white border border-gray-200 hover:shadow-md transition-all duration-200"
                 initial={{ opacity: 0, y: 20 }}
                 animate={{ opacity: 1, y: 0 }}
                 transition={{ delay: 0.1 * index }}
@@ -69,7 +69,7 @@ const TransportationPanel: React.FC<TransportationPanelProps> = ({ title, data, 
               >
                 <div className="flex items-center justify-between">
                   <h3 className="font-semibold text-gray-900 flex items-center">
-                    {item.line || item.airport}
+                    {item.line || item.airline || item.airport}
                   </h3>
                   <Badge className={`border ${getStatusColor(item.status)}`}>
                     {getStatusIcon(item.status)}
@@ -105,9 +105,8 @@ const TransportationPanel: React.FC<TransportationPanelProps> = ({ title, data, 
               </motion.div>
             ))
           )}
-        </CardContent>
-      </Card>
-    </div>
+      </CardContent>
+    </Card>
   );
 };
 

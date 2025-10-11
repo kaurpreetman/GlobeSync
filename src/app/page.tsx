@@ -8,7 +8,6 @@ import { useEffect, useState } from "react";
 import { useToast } from "@/hooks/use-toast";
 import DestinationCard from "@/components/Cards/DestinationCard";
 import CalendarIntegration from "@/components/calendar/CalendarIntegration";
-import CityComparisonModal from "@/components/travel/CityComparisonModal";
 
 import parisImage from "@/assets/paris.jpg";
 import tokyoImage from "@/assets/tokyo.jpg";
@@ -214,16 +213,15 @@ export default function Home() {
               <ArrowRight className="ml-2 h-4 w-4" />
             </Button>
             
-            <CityComparisonModal>
-              <Button
-                variant="outline"
-                size="lg"
-                className="bg-white/10 backdrop-blur-sm text-white border-white/20 hover:bg-white/20"
-              >
-                Compare Cities
-                <ArrowRight className="ml-2 h-4 w-4" />
-              </Button>
-            </CityComparisonModal>
+            <Button
+              variant="outline"
+              size="lg"
+              className="bg-white/10 backdrop-blur-sm text-white border-white/20 hover:bg-white/20"
+              onClick={() => router.push("/compare")}
+            >
+              Compare Cities
+              <ArrowRight className="ml-2 h-4 w-4" />
+            </Button>
           </div>
         </div>
       </section>
@@ -303,12 +301,14 @@ export default function Home() {
               </div>
             </div>
             
-            <CityComparisonModal>
-              <Button size="lg" className="px-8">
-                Compare Cities Now
-                <ArrowRight className="ml-2 h-5 w-5" />
-              </Button>
-            </CityComparisonModal>
+            <Button 
+              size="lg" 
+              className="px-8"
+              onClick={() => router.push("/compare")}
+            >
+              Compare Cities Now
+              <ArrowRight className="ml-2 h-5 w-5" />
+            </Button>
             
             <div className="text-center max-w-2xl">
               <p className="text-sm text-muted-foreground">

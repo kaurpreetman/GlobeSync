@@ -25,21 +25,20 @@ const BudgetOverview: React.FC<BudgetOverviewProps> = ({ budget }) => {
   }
 
   return (
-    <div className="h-full flex flex-col">
-      <Card className="flex-1 border-0 shadow-lg">
-        <CardHeader className="bg-gradient-to-r from-green-50 to-emerald-50 rounded-t-lg">
-          <CardTitle className="flex items-center text-green-800">
-            <div className="w-10 h-10 bg-gradient-to-r from-green-500 to-emerald-500 rounded-lg flex items-center justify-center mr-3">
-              <DollarSign className="w-5 h-5 text-white" />
-            </div>
-            Budget Overview
-          </CardTitle>
-          <CardDescription className="text-green-600">
-            {budget.total ? `${budget.total} total budget` : "No total specified"}
-          </CardDescription>
-        </CardHeader>
+    <Card className="border-0 shadow-lg h-fit max-h-[500px]">
+      <CardHeader className="bg-gradient-to-r from-green-50 to-emerald-50 rounded-t-lg pb-4">
+        <CardTitle className="flex items-center text-green-800 text-lg">
+          <div className="w-8 h-8 bg-gradient-to-r from-green-500 to-emerald-500 rounded-lg flex items-center justify-center mr-3">
+            <DollarSign className="w-4 h-4 text-white" />
+          </div>
+          Budget Overview
+        </CardTitle>
+        <CardDescription className="text-green-600">
+          {budget.total ? `${budget.total} total budget` : "No total specified"}
+        </CardDescription>
+      </CardHeader>
 
-        <CardContent className="p-6 space-y-6 flex-1 overflow-y-auto">
+      <CardContent className="p-4 space-y-4 overflow-y-auto max-h-[300px]">
           {/* Category Breakdown */}
           <div className="space-y-4">
             <h3 className="font-semibold text-gray-900 flex items-center">
@@ -51,23 +50,23 @@ const BudgetOverview: React.FC<BudgetOverviewProps> = ({ budget }) => {
               budget.categories.map((category, index) => (
                 <motion.div
                   key={category.name}
-                  className="space-y-3 p-4 bg-gray-50 rounded-lg hover:bg-gray-100 transition-colors"
+                  className="space-y-2 p-3 bg-gray-50 rounded-lg hover:bg-gray-100 transition-colors"
                   initial={{ opacity: 0, x: -20 }}
                   animate={{ opacity: 1, x: 0 }}
                   transition={{ delay: 0.05 * index }}
                 >
                   <div className="flex justify-between items-center">
-                    <span className="font-medium text-gray-700">{category.name}</span>
+                    <span className="font-medium text-gray-700 text-sm">{category.name}</span>
                     <div className="text-right">
-                      <div className="font-bold text-gray-900">{category.amount}</div>
+                      <div className="font-bold text-gray-900 text-sm">{category.amount}</div>
                       <Badge variant="secondary" className="text-xs">
                         {category.percentage}%
                       </Badge>
                     </div>
                   </div>
-                  <div className="w-full bg-gray-200 rounded-full h-2 overflow-hidden">
+                  <div className="w-full bg-gray-200 rounded-full h-1.5 overflow-hidden">
                     <motion.div
-                      className="h-2 rounded-full bg-gradient-to-r from-green-500 to-emerald-500"
+                      className="h-1.5 rounded-full bg-gradient-to-r from-green-500 to-emerald-500"
                       initial={{ width: 0 }}
                       animate={{ width: `${category.percentage}%` }}
                       transition={{ duration: 0.6, delay: 0.1 + index * 0.05 }}
@@ -79,9 +78,8 @@ const BudgetOverview: React.FC<BudgetOverviewProps> = ({ budget }) => {
               <p className="text-gray-500">No expense categories provided.</p>
             )}
           </div>
-        </CardContent>
-      </Card>
-    </div>
+      </CardContent>
+    </Card>
   );
 };
 

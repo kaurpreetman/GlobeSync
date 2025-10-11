@@ -9,7 +9,7 @@ import {
 } from "@/types/cityComparison";
 
 // Backend API Configuration
-const BACKEND_BASE_URL = process.env.NEXT_PUBLIC_BACKEND_URL || 'http://localhost:8000';
+const BACKEND_BASE_URL = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8000';
 
 // Backend API Types
 interface TripPlanRequest {
@@ -51,7 +51,7 @@ interface TripResultResponse {
   completed_agents: string[];
 }
 
-// Main function to fetch city comparison data using backend trip planning
+// Main function to fetch city comparison data using dedicated comparison endpoint
 export async function fetchCityComparisonData(formData: ComparisonFormData): Promise<{
   city1Data: CityData | null;
   city2Data: CityData | null;
@@ -60,15 +60,11 @@ export async function fetchCityComparisonData(formData: ComparisonFormData): Pro
   const errors: string[] = [];
   
   try {
-    // Start trip planning for both cities in parallel
-    const [city1TripId, city2TripId] = await Promise.all([
-      startTripPlanning(formData.destinationCity1, formData),
-      startTripPlanning(formData.destinationCity2, formData)
-    ]);
+    // Start city comparison using dedicated endpoint
+    const comparisonId = await startCityComparison(formData);
     
-    if (!city1TripId || !city2TripId) {
-      errors.push("Failed to initiate trip planning for one or both cities");
-      // Return fallback data instead of null
+    if (!comparisonId) {
+      errors.push("Failed to initiate city comparison");
       return {
         city1Data: createFallbackCityData(formData.destinationCity1, formData),
         city2Data: createFallbackCityData(formData.destinationCity2, formData),
@@ -76,27 +72,26 @@ export async function fetchCityComparisonData(formData: ComparisonFormData): Pro
       };
     }
     
-    // Poll for completion of both trips
-    const [city1Result, city2Result] = await Promise.all([
-      pollTripCompletion(city1TripId),
-      pollTripCompletion(city2TripId)
-    ]);
+    // Poll for completion
+    const comparisonResult = await pollComparisonCompletion(comparisonId);
     
-    // Process results into our format
-    const city1Data = city1Result ? transformBackendDataToCityData(
-      formData.destinationCity1, 
-      city1Result.result, 
-      formData
-    ) : createFallbackCityData(formData.destinationCity1, formData);
+    if (!comparisonResult) {
+      errors.push("City comparison timed out or failed - using fallback data");
+      return {
+        city1Data: createFallbackCityData(formData.destinationCity1, formData),
+        city2Data: createFallbackCityData(formData.destinationCity2, formData),
+        errors
+      };
+    }
     
-    const city2Data = city2Result ? transformBackendDataToCityData(
-      formData.destinationCity2, 
-      city2Result.result, 
-      formData
-    ) : createFallbackCityData(formData.destinationCity2, formData);
+    // Process results - they're already in the correct format from our new endpoint
+    const city1Data = comparisonResult.city1_data || createFallbackCityData(formData.destinationCity1, formData);
+    const city2Data = comparisonResult.city2_data || createFallbackCityData(formData.destinationCity2, formData);
     
-    if (!city1Result) errors.push(`Backend failed for ${formData.destinationCity1} - using fallback data`);
-    if (!city2Result) errors.push(`Backend failed for ${formData.destinationCity2} - using fallback data`);
+    // Add any errors from the backend
+    if (comparisonResult.errors && comparisonResult.errors.length > 0) {
+      errors.push(...comparisonResult.errors);
+    }
     
     return { city1Data, city2Data, errors };
     
@@ -113,23 +108,20 @@ export async function fetchCityComparisonData(formData: ComparisonFormData): Pro
   }
 }
 
-// Start a trip planning process for a single city
-async function startTripPlanning(destination: string, formData: ComparisonFormData): Promise<string | null> {
+// Start a city comparison process
+async function startCityComparison(formData: ComparisonFormData): Promise<string | null> {
   try {
-    const requestData: TripPlanRequest = {
-      user_id: `comparison_user_${Date.now()}`,
-      destination,
-      start_date: formData.travelDate,
-      end_date: formData.returnDate,
-      budget: getBudgetAmount(formData.budgetLevel),
-      preferences: {
-        origin: formData.origin,
-        budgetLevel: formData.budgetLevel,
-        passengers: formData.passengers
-      }
+    const requestData = {
+      origin: formData.origin,
+      destinationCity1: formData.destinationCity1,
+      destinationCity2: formData.destinationCity2,
+      travelDate: formData.travelDate,
+      returnDate: formData.returnDate,
+      passengers: formData.passengers,
+      budgetLevel: formData.budgetLevel
     };
     
-    const response = await fetch(`${BACKEND_BASE_URL}/api/v1/trips/plan`, {
+    const response = await fetch(`${BACKEND_BASE_URL}/api/v1/cities/compare`, {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
@@ -142,53 +134,53 @@ async function startTripPlanning(destination: string, formData: ComparisonFormDa
     }
     
     const result = await response.json();
-    return result.trip_id;
+    return result.comparison_id;
     
   } catch (error) {
-    console.error(`Error starting trip planning for ${destination}:`, error);
+    console.error('Error starting city comparison:', error);
     return null;
   }
 }
 
-// Poll trip status until completion
-async function pollTripCompletion(tripId: string): Promise<TripResultResponse | null> {
+// Poll comparison status until completion
+async function pollComparisonCompletion(comparisonId: string): Promise<any | null> {
   const maxAttempts = 30; // 5 minutes max (10s intervals)
   let attempts = 0;
   
   while (attempts < maxAttempts) {
     try {
-      const statusResponse = await fetch(`${BACKEND_BASE_URL}/api/v1/trips/${tripId}/status`);
+      const statusResponse = await fetch(`${BACKEND_BASE_URL}/api/v1/cities/compare/${comparisonId}/status`);
       
       if (!statusResponse.ok) {
         throw new Error(`Status check failed: ${statusResponse.status}`);
       }
       
-      const status: TripStatusResponse = await statusResponse.json();
+      const status = await statusResponse.json();
       
       if (status.status === 'completed') {
         // Get the full result
-        const resultResponse = await fetch(`${BACKEND_BASE_URL}/api/v1/trips/${tripId}/result`);
+        const resultResponse = await fetch(`${BACKEND_BASE_URL}/api/v1/cities/compare/${comparisonId}/result`);
         
         if (resultResponse.ok) {
           return await resultResponse.json();
         }
       } else if (status.status === 'failed') {
-        console.error(`Trip planning failed for ${tripId}: ${status.error_message}`);
+        console.error(`City comparison failed for ${comparisonId}: ${status.errors}`);
         return null;
       }
       
       // Wait before next poll
-      await new Promise(resolve => setTimeout(resolve, 10000)); // 10 seconds
+      await new Promise(resolve => setTimeout(resolve, 5000)); // 5 seconds - faster for comparison
       attempts++;
       
     } catch (error) {
-      console.error(`Error polling trip ${tripId}:`, error);
+      console.error(`Error polling comparison ${comparisonId}:`, error);
       attempts++;
-      await new Promise(resolve => setTimeout(resolve, 5000)); // 5 seconds on error
+      await new Promise(resolve => setTimeout(resolve, 3000)); // 3 seconds on error
     }
   }
   
-  console.error(`Trip planning timed out for ${tripId}`);
+  console.error(`City comparison timed out for ${comparisonId}`);
   return null;
 }
 
