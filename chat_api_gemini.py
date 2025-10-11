@@ -31,6 +31,18 @@ Format it like: "🏨 [Hotel Name] - 🔗 Book here: [URL]"
 Make the URLs clickable and visible in your response.
 Prioritize showing real hotel names and booking links from the data.
 """
+        elif tool_type == "flights":
+            additional_instructions = """
+IMPORTANT: For flight search results:
+1. Display the search_results and airline_results with their booking URLs
+2. Format each result like: "✈️ [Airline/Source] - 🔗 Book here: [URL]"
+3. Show the actual URLs from search_results so users can click to book
+4. Include price information if available in the snippets
+5. Make the booking URLs prominent and clickable
+Example format:
+"✈️ Kayak - Flights from NYC to London - 🔗 https://www.kayak.com/flights/..."
+"✈️ Expedia - Best deals on this route - 🔗 https://www.expedia.com/..."
+"""
         
         interpretation_prompt = f"""
 I retrieved {tool_type} data. Present this clearly and conversationally. 
@@ -45,6 +57,19 @@ User Request: "{original_message}"
 User Context:
 {json.dumps(context.get('basic_info', {}), indent=2)}
 """
+        try:
+            response = await self.llm.ainvoke(interpretation_prompt)
+            interpreted_response = response.content.strip()
+            self.add_to_conversation_history(user_id, "assistant", interpreted_response)
+            return {
+                "type": "message",
+                "message": interpreted_response,
+                "tool_data_type": tool_type,
+                "suggested_responses": self.generate_tool_based_suggestions(tool_type, context),
+                "has_tool_data": True
+            }
+        except Exception as e:
+            return {"type":"message","message":f"I retrieved {tool_type} info but had trouble summarizing it.","error_details":str(e)}
 from config import settings
 
 # --- Utility for safe serialization ---

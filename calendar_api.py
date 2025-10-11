@@ -56,10 +56,38 @@ def get_user_credentials(user_id: str) -> Optional[Credentials]:
         try:
             with open(token_path, 'rb') as token:
                 creds = pickle.load(token)
-                if creds and creds.valid:
+                
+                # Check if credentials exist
+                if not creds:
+                    logger.warning(f"No credentials found in token file for user {user_id}")
+                    return None
+                
+                # Check if credentials are valid
+                if creds.valid:
+                    logger.info(f"Valid credentials loaded for user {user_id}")
                     return creds
+                
+                # Try to refresh if expired
+                if creds.expired and creds.refresh_token:
+                    logger.info(f"Refreshing expired credentials for user {user_id}")
+                    from google.auth.transport.requests import Request
+                    try:
+                        creds.refresh(Request())
+                        # Save refreshed credentials
+                        save_user_credentials(user_id, creds)
+                        logger.info(f"Successfully refreshed credentials for user {user_id}")
+                        return creds
+                    except Exception as refresh_error:
+                        logger.error(f"Failed to refresh credentials for user {user_id}: {refresh_error}")
+                        return None
+                
+                logger.warning(f"Credentials invalid and cannot be refreshed for user {user_id}")
+                return None
+                
         except Exception as e:
-            logger.error(f"Error loading credentials for user {user_id}: {e}")
+            logger.error(f"Error loading credentials for user {user_id}: {e}", exc_info=True)
+    else:
+        logger.warning(f"Token file not found for user {user_id}: {token_path}")
     
     return None
 
@@ -347,15 +375,33 @@ async def sync_trip_to_calendar(sync_request: TripSyncRequest):
     Sync a complete trip to Google Calendar with detailed events
     """
     try:
+        logger.info(f"=== SYNC TRIP REQUEST ===")
+        logger.info(f"User ID: {sync_request.user_id}")
+        logger.info(f"Trip ID: {sync_request.trip_id}")
+        
         creds = get_user_credentials(sync_request.user_id)
         
         if not creds:
+            logger.error(f"No valid credentials found for user {sync_request.user_id}")
             raise HTTPException(
                 status_code=401,
                 detail="Calendar not connected. Please connect your Google Calendar first."
             )
         
+        logger.info(f"Building Google Calendar service...")
         service = build('calendar', 'v3', credentials=creds)
+        
+        # Test calendar access
+        try:
+            calendar_list = service.calendarList().list(maxResults=1).execute()
+            logger.info(f"Calendar access confirmed. Found {len(calendar_list.get('items', []))} calendars")
+        except Exception as test_error:
+            logger.error(f"Calendar access test failed: {test_error}")
+            raise HTTPException(
+                status_code=403,
+                detail=f"Cannot access Google Calendar: {str(test_error)}"
+            )
+        
         trip_data = sync_request.trip_data
         
         # Extract trip information
@@ -393,6 +439,9 @@ async def sync_trip_to_calendar(sync_request: TripSyncRequest):
         created_events = []
         failed_events = []
         
+        logger.info(f"Creating trip events for {origin} → {destination}")
+        logger.info(f"Start date: {start_date.strftime('%Y-%m-%d')}, Duration: {duration_days} days")
+        
         # 1. Create main trip event
         main_event = {
             'summary': f'{trip_type}: {origin} to {destination}',
@@ -418,8 +467,13 @@ async def sync_trip_to_calendar(sync_request: TripSyncRequest):
             },
         }
         
+        logger.info(f"Attempting to create main trip event...")
         try:
             created_event = service.events().insert(calendarId='primary', body=main_event).execute()
+            event_link = created_event.get('htmlLink', 'No link')
+            logger.info(f"✅ Main trip event created successfully!")
+            logger.info(f"   Event ID: {created_event['id']}")
+            logger.info(f"   Link: {event_link}")
             created_events.append({
                 "name": "Main Trip",
                 "event_id": created_event['id'],

@@ -1025,9 +1025,19 @@ class AccommodationTool:
                 search_text += f"Content: {result['body']}\n"
                 search_text += f"URL: {result['url']}\n"
             
+            # Log the search results for debugging
+            logger.info(f"===== ACCOMMODATION SEARCH RESULTS FOR {location} =====")
+            logger.info(f"Total results: {len(search_results)}")
+            for i, result in enumerate(search_results[:3]):  # Log first 3 results
+                logger.info(f"Result {i+1}: {result['title'][:100]}")
+                logger.info(f"URL {i+1}: {result['url']}")
+            logger.info("=" * 60)
+            
             nights = (check_out - check_in).days
             
             prompt = f"""
+            CRITICAL: You are extracting REAL hotel data from actual web search results. Do NOT make up or invent any hotels.
+            
             Analyze the following search results and extract structured accommodation information for {location}.
             
             Check-in: {check_in.strftime('%Y-%m-%d')}
@@ -1043,27 +1053,27 @@ class AccommodationTool:
                 "accommodations": [
                     {{
                         "id": "unique_id",
-                        "name": "Hotel/Accommodation Name",
+                        "name": "EXACT hotel name from search results",
                         "type": "hotel|hostel|apartment|resort|guesthouse",
                         "price_per_night": 100.00,
                         "rating": 4.5,
                         "amenities": ["wifi", "pool", "breakfast", "gym"],
                         "location": "{location}",
-                        "booking_url": "URL from search results",
-                        "description": "Brief description"
+                        "booking_url": "EXACT URL from the search result",
+                        "description": "Brief description from search results"
                     }}
                 ]
             }}
 
-            Guidelines:
-            - Extract actual hotel/accommodation names from the search results
-            - Use the actual URLs from search results as booking_url
-            - If price isn't mentioned, estimate based on accommodation type and location
-            - Include both options within budget and slightly above (up to 30% more)
-            - Rating should be realistic (3.0-5.0 range)
-            - Common amenities: wifi, pool, spa, gym, breakfast, parking, restaurant, room_service
-            - Extract at least 5-8 options if search results have enough information
-            - Prioritize results from booking.com, hotels.com, airbnb.com, or official hotel sites
+            STRICT RULES:
+            - ONLY extract hotels that are EXPLICITLY MENTIONED in the search results above
+            - The "name" field MUST be the actual hotel name from the search results (e.g., "Taj Mahal Palace", "Holiday Inn Express", "The Oberoi")
+            - The "booking_url" MUST be the actual URL from the search results (from booking.com, hotels.com, airbnb.com, etc.)
+            - Do NOT invent generic names like "Hyderabad Mid-Range Hotel" or "Budget Hotel #1"
+            - If you cannot find REAL hotel names in the search results, return an empty accommodations array
+            - If price is not mentioned in search results, you can estimate, but the hotel name and URL MUST be real
+            - Only include accommodations where you have a real hotel name AND a real booking URL
+            - Extract 3-6 options if available in the search results
             """
             
             response = await self.llm.ainvoke(prompt)
@@ -1082,6 +1092,37 @@ class AccommodationTool:
                 accommodations = []
                 for acc in data.get("accommodations", []):
                     try:
+                        # Validate that this is a real hotel with actual data
+                        name = acc.get("name", "")
+                        booking_url = acc.get("booking_url", "")
+                        
+                        # Reject fake/generic names
+                        fake_patterns = [
+                            "Mid-Range Hotel",
+                            "Budget Hotel",
+                            "Luxury Hotel",
+                            "Hotel #",
+                            "Apartment #",
+                            "Accommodation in",
+                            "Generic"
+                        ]
+                        
+                        is_fake = any(pattern in name for pattern in fake_patterns)
+                        
+                        # Must have a real booking URL
+                        has_real_url = booking_url and ("booking.com" in booking_url or 
+                                                       "hotels.com" in booking_url or 
+                                                       "airbnb.com" in booking_url or
+                                                       "expedia.com" in booking_url or
+                                                       "agoda.com" in booking_url or
+                                                       "trip.com" in booking_url or
+                                                       "tripadvisor" in booking_url or
+                                                       len(booking_url) > 20)
+                        
+                        if is_fake or not has_real_url:
+                            logger.warning(f"Skipping fake/invalid accommodation: {name} (URL: {booking_url})")
+                            continue
+                        
                         # Ensure required fields exist
                         accommodation = {
                             "id": acc.get("id", f"acc_{len(accommodations)}"),
